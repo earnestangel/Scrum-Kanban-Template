@@ -1,0 +1,3 @@
+{
+  "exclude": [".claude/worktrees/", ".idea/", ".vscode/"]
+}
