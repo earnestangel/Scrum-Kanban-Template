@@ -55,7 +55,7 @@ A ticket may enter `TODO` only when its `board.json` record has all of these fie
 | `context.files` | Files the worker will read or change. |
 | `context.symbols` | Functions, classes, or methods involved. (`files` or `symbols` required.) |
 | `context.entry_points` | Where the flow starts (route, command, handler). Optional. |
-| `context.codegraph_queries` | Ready-made `codegraph_explore` queries that return the relevant source. Required. |
+| `context.codegraph_queries` | Ready-made `codegraph_explore` queries that return the relevant source. Required when the repository has a CodeGraph index. |
 | `acceptance` | Observable results that prove the ticket is done. |
 | `verify_cmd` | Command the worker runs to self-check (tests, typecheck, lint). |
 | `handovers` | Handover note IDs the worker must read (see section 6). Must include the ticket's own ID. |
@@ -163,7 +163,7 @@ If there is no `.codegraph/` directory, use the built-in tools. Indexing is the 
   - Epics / Stories: `feature/<TICKET-ID>-<slug>` (e.g. `feature/EPIC-001-monorepo-foundation`)
   - Bugs: `fix/<TICKET-ID>-<slug>` (e.g. `fix/BUG-004-null-session`)
   - Chores: `chore/<TICKET-ID>-<slug>` (e.g. `chore/CHORE-002-upgrade-deps`)
-- **Target Branch**: PRs **always** target `develop`. Never open PRs against `main` or `master` during the redevelopment phase.
+- **Target Branch**: PRs **always** target `develop`. Never open PRs against any other branch.
 
 ### 8.2. Anti-Runaway Session Boundary
 - Sessions must **never** silently complete multiple epics without user checkpoints.
