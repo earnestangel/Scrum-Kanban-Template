@@ -1,0 +1,31 @@
+{
+  "$schema": "./protocol.md",
+  "wip_limit_per_worker": 1,
+  "max_parallel_workers": 2,
+  "_ticket_template": {
+    "id": "TASK-001",
+    "title": "Short imperative title",
+    "status": "BACKLOG",
+    "points": 3,
+    "parent": "STORY-001",
+    "children": [],
+    "requires": [],
+    "blocks": [],
+    "model": "sonnet",
+    "assignee": null,
+    "context": {
+      "files": ["src/path/to/file.ts"],
+      "symbols": ["ClassName.method", "functionName"],
+      "entry_points": ["src/index.ts"],
+      "codegraph_queries": ["ClassName.method functionName"]
+    },
+    "acceptance": ["Observable result that proves the ticket is done"],
+    "verify_cmd": "npm test -- path/to/test",
+    "handovers": ["TASK-001"]
+  },
+  "epics": [],
+  "stories": [],
+  "tasks": [],
+  "chores": [],
+  "bugs": []
+}
