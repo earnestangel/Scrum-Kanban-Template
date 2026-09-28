@@ -42,5 +42,6 @@ The coordinator gives you a ticket ID, a worker name for `assignee`, and the mai
 - One ticket only. Never start, groom, or re-estimate another ticket.
 - Never commit, push, or open PRs. The coordinator does that after the user confirms.
 - Never edit `BOARD.md` by hand. It is generated.
+- Board first, work second. Claim the ticket and run `render-board.mjs` (step 4) before you load code, edit files, or run commands. Humans must see your work on `BOARD.md` while it happens, not after.
 - Never delete handover entries. Only append.
 - If the ticket is wrong or too large (for example, it needs 13+ points of work), set it to `PAUSED`, explain in PROGRESS, and stop.

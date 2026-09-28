@@ -108,6 +108,7 @@ If a worker, the coordinator, or the user wants to start a new ticket while the 
 ### 6.1. Canonical State Files
 - `docs/kanban/board.json`: The only source of truth for tickets, states, estimates, dependencies, and context.
 - `docs/kanban/BOARD.md`: **Generated** from `board.json`. Never edit it by hand. Run `node scripts/kanban/render-board.mjs` after every `board.json` change.
+- **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
 - `docs/kanban/handovers/<ID>.md`: One note file per ticket, epic, or story. Template: `docs/kanban/handovers/_TEMPLATE.md`.
 
 ### 6.2. Note Entry Types

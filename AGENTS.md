@@ -22,6 +22,7 @@ All agents and subagents follow the **Scrum Kanban Protocol** in [docs/kanban/pr
 ### 1.5. Board Files
 - `docs/kanban/board.json` is the only source of truth.
 - `docs/kanban/BOARD.md` is generated. After every `board.json` change, run `node scripts/kanban/render-board.mjs`. Never edit `BOARD.md` by hand.
+- **Board first, work second.** Every agent and subagent sets its ticket to `IN_PROGRESS` (with `assignee`) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. Humans must see what agents are working on while the work happens, not after. Every later status change is rendered the moment it happens.
 
 ### 1.6. Git & PRs
 - Branches `feature/|fix/|chore/<TICKET-ID>-<slug>`, PRs target `develop`.
