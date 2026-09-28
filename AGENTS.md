@@ -1,3 +1,4 @@
+<!-- scrum-kanban:start -->
 ## Scrum Kanban Governance & Standing Operating Rules
 All agents and subagents follow the **Scrum Kanban Protocol** in [docs/kanban/protocol.md](docs/kanban/protocol.md). Summary:
 
@@ -12,7 +13,7 @@ All agents and subagents follow the **Scrum Kanban Protocol** in [docs/kanban/pr
 
 ### 1.3. Grooming
 - Fibonacci points (1, 2, 3, 5, 8, 13, 21). 13+ must be split. Nothing leaves `BACKLOG` without an estimate.
-- A ticket enters `TODO` only when it has `model`, `context` (files, symbols, codegraph_queries), `acceptance`, `verify_cmd`, and a `GROOMING` handover entry (protocol section 3.1).
+- A ticket enters `TODO` only when it has `model`, `context` (files, symbols, and codegraph_queries when CodeGraph is installed), `acceptance`, `verify_cmd`, and a `GROOMING` handover entry (protocol section 3.1).
 
 ### 1.4. Handover Notes
 - `docs/kanban/handovers/<ID>.md` is an append-only log per ticket, story, or epic. Template: `_TEMPLATE.md`.
@@ -35,7 +36,9 @@ All agents and subagents follow the **Scrum Kanban Protocol** in [docs/kanban/pr
 - docs/kanban/board.json — Ticket registry (source of truth). `_ticket_template` shows every field.
 - docs/kanban/BOARD.md — Generated human-readable board.
 - docs/kanban/handovers/ — Handover notes, `_TEMPLATE.md`, and `HANDOVERS.md` (open flags).
-- README.md — Setup: CodeGraph install, hooks, git hooks.
+- [Scrum-Kanban-Template README](https://github.com/earnestangel/Scrum-Kanban-Template#readme) — Setup, upgrade, CodeGraph install, hooks.
+
+<!-- scrum-kanban:end -->
 
 <!-- CODEGRAPH_START -->
 ## 3. CodeGraph

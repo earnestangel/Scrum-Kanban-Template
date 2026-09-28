@@ -45,7 +45,7 @@ if (!isCodeLookup()) process.exit(0);
 const cwd = event.cwd ?? process.cwd();
 const findIndex = (dir) => {
   for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-    if (fs.existsSync(path.join(d, '.codegraph'))) return d;
+    if (fs.existsSync(path.join(d, '.codegraph', 'codegraph.db'))) return d;
     if (path.dirname(d) === d) return null;
   }
 };

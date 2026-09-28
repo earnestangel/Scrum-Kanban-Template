@@ -15,6 +15,8 @@ const boardPath = path.join(root, 'docs', 'kanban', 'board.json');
 const mdPath = path.join(root, 'docs', 'kanban', 'BOARD.md');
 const handoverDir = path.join(root, 'docs', 'kanban', 'handovers');
 const checkOnly = process.argv.includes('--check');
+// codegraph_queries are required only when the repository has a CodeGraph index.
+const hasIndex = fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'));
 
 const FIB = [1, 2, 3, 5, 8, 13, 21];
 const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'REVIEW', 'DONE', 'ABANDONED'];
@@ -53,7 +55,7 @@ for (const t of all) {
   if (needsGrooming(t)) {
     if (!t.model) errors.push(`${at}: no "model" set; grooming must pick the worker model`);
     if (!t.context?.files?.length && !t.context?.symbols?.length) errors.push(`${at}: context.files or context.symbols is empty; grooming must record where the work is`);
-    if (!t.context?.codegraph_queries?.length) errors.push(`${at}: context.codegraph_queries is empty; grooming must record the queries that found the code`);
+    if (hasIndex && !t.context?.codegraph_queries?.length) errors.push(`${at}: context.codegraph_queries is empty; grooming must record the queries that found the code`);
     if (!t.acceptance?.length) errors.push(`${at}: acceptance criteria are empty`);
     if (!t.verify_cmd) errors.push(`${at}: no verify_cmd; the worker cannot self-check`);
     if (!(t.handovers ?? []).includes(t.id)) errors.push(`${at}: handovers must include its own note "${t.id}"`);

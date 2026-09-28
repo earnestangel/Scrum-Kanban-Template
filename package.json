@@ -1,0 +1,34 @@
+{
+  "name": "scrum-kanban-template",
+  "version": "0.1.0",
+  "description": "Scrum Kanban workflow for AI coding agents: an Opus coordinator grooms tickets, Sonnet workers execute them.",
+  "type": "module",
+  "bin": {
+    "scrum-kanban": "bin/scrum-kanban.mjs"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "docs/kanban/protocol.md",
+    "docs/kanban/board.json",
+    "docs/kanban/handovers/_TEMPLATE.md",
+    "docs/kanban/handovers/HANDOVERS.md",
+    ".claude/agents/ticket-worker.md",
+    ".claude/settings.json",
+    ".codex/config.toml",
+    ".github/workflows/kanban-board.yml",
+    "opencode.jsonc",
+    "AGENTS.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "board": "node scripts/kanban/render-board.mjs",
+    "board:check": "node scripts/kanban/render-board.mjs --check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/earnestangel/Scrum-Kanban-Template.git"
+  }
+}

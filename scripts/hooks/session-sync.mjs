@@ -11,7 +11,7 @@ import path from 'node:path';
 const root = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 const out = [];
 
-if (fs.existsSync(path.join(root, '.codegraph'))) {
+if (fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'))) {
   // shell: true so Windows resolves codegraph.cmd; one quoted string avoids Node's DEP0190 warning.
   const r = spawnSync(`codegraph sync -q "${root}"`, { shell: true, encoding: 'utf8', timeout: 90_000 });
   out.push(r.status === 0 ? 'CodeGraph index synced.' : `CodeGraph sync failed (exit ${r.status}). Run "codegraph sync" manually.`);

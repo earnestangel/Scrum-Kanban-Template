@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "codegraph prompt-hook"
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/prompt-context.mjs\""
           }
         ]
       }
