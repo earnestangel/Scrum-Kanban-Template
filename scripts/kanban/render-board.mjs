@@ -20,7 +20,9 @@ const hasIndex = fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'));
 
 const FIB = [1, 2, 3, 5, 8, 13, 21];
 const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'REVIEW', 'DONE', 'ABANDONED'];
-const MODELS = ['haiku', 'sonnet', 'opus'];
+// Provider-neutral model tiers. protocol.md section 1.2 maps them to each provider's models.
+const MODELS = ['small', 'medium', 'large'];
+const LEGACY_MODELS = { haiku: 'small', sonnet: 'medium', opus: 'large' };
 const GROUPS = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
 
 const board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
@@ -50,7 +52,8 @@ for (const t of all) {
   for (const r of [...(t.requires ?? []), ...(t.blocks ?? []), ...(t.children ?? [])]) {
     if (!byId.has(r)) errors.push(`${at}: references unknown ticket ${r}`);
   }
-  if (t.model && !MODELS.includes(t.model)) errors.push(`${at}: model must be one of ${MODELS.join(', ')}`);
+  if (t.model && LEGACY_MODELS[t.model]) errors.push(`${at}: model "${t.model}" is a provider model name; use the tier "${LEGACY_MODELS[t.model]}" (or run the installer's upgrade)`);
+  else if (t.model && !MODELS.includes(t.model)) errors.push(`${at}: model must be one of ${MODELS.join(', ')}`);
 
   if (needsGrooming(t)) {
     if (!t.model) errors.push(`${at}: no "model" set; grooming must pick the worker model`);
@@ -81,29 +84,17 @@ for (const s of all.filter((t) => t.type === 'story')) {
   if (sum !== s.points) warnings.push(`${s.id}: story is ${s.points} pts but its tasks add up to ${sum}`);
 }
 
-// WIP: at most wip_limit_per_worker tickets per worker, at most max_parallel_workers workers,
-// and no two IN_PROGRESS tickets may touch the same file.
-const wipPerWorker = board.wip_limit_per_worker ?? 1;
-const maxWorkers = board.max_parallel_workers ?? 1;
+// WIP: at most wip_limit tickets IN_PROGRESS on the whole board. Serial work in one checkout
+// is what lets any AI provider run the workflow; see protocol.md section 5.1.
+const wip = board.wip_limit ?? 1;
+for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
+  if (k in board) warnings.push(`board.json: "${k}" is no longer used; replace it with "wip_limit": 1`);
+}
 const active = all.filter((t) => t.status === 'IN_PROGRESS');
-const perWorker = new Map();
 for (const t of active) {
   if (!t.assignee) errors.push(`${t.id}: IN_PROGRESS without an assignee`);
-  const k = t.assignee ?? '(none)';
-  perWorker.set(k, [...(perWorker.get(k) ?? []), t.id]);
 }
-for (const [w, ids] of perWorker) {
-  if (ids.length > wipPerWorker) errors.push(`WIP: worker "${w}" has ${ids.length} tickets in progress (${ids.join(', ')}); limit is ${wipPerWorker}`);
-}
-if (perWorker.size > maxWorkers) errors.push(`WIP: ${perWorker.size} workers active; max_parallel_workers is ${maxWorkers}`);
-const fileOwner = new Map();
-for (const t of active) {
-  for (const f of t.context?.files ?? []) {
-    const key = f.replace(/\\/g, '/').toLowerCase();
-    if (fileOwner.has(key)) errors.push(`WIP: ${t.id} and ${fileOwner.get(key)} are both IN_PROGRESS and both touch ${f}`);
-    else fileOwner.set(key, t.id);
-  }
-}
+if (active.length > wip) errors.push(`WIP: ${active.length} tickets in progress (${active.map((t) => t.id).join(', ')}); wip_limit is ${wip}`);
 
 // ---------- render ----------
 const esc = (s) => String(s ?? '').replace(/\|/g, '\\|');
@@ -132,7 +123,7 @@ let md = `# Live Scrum Kanban Board
 
 <!-- GENERATED from board.json by scripts/kanban/render-board.mjs. Do not edit by hand. -->
 
-> **WIP rule**: each worker holds at most ${wipPerWorker} ticket in \`IN_PROGRESS\`; at most ${maxWorkers} workers run at once; two \`IN_PROGRESS\` tickets never touch the same file.
+> **WIP rule**: at most ${wip} ticket in \`IN_PROGRESS\` on the whole board. Any agent (Claude, Gemini, Codex, or another) may hold it.
 
 ## ⚡ In Progress
 ${table(active, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.assignee, cols.model, cols.note])}

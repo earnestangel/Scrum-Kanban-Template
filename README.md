@@ -1,8 +1,8 @@
 # Scrum Kanban Agent Workflow
 
-A Scrum Kanban workflow for AI coding agents. An Opus coordinator grooms tickets once, with full context. Cheaper Sonnet workers then execute them without rediscovering the code. The board lives in your repository as `docs/kanban/board.json`, validated by a zero-dependency Node script.
+A Scrum Kanban workflow for AI coding agents. A coordinator on a strong model grooms tickets once, with full context. A worker on a cheaper model tier then executes each ticket without rediscovering the code. The board lives in your repository as `docs/kanban/board.json`, validated by a zero-dependency Node script.
 
-Works with Claude Code out of the box. The rules in `AGENTS.md` also load in Codex, Gemini CLI, opencode, and other agents that read `AGENTS.md`.
+The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and other agents that read `AGENTS.md` run the same steps. To make this possible, the board allows **one ticket `IN_PROGRESS` at a time** (WIP 1), in the main checkout. The flow needs no subagents, no worktrees, and no specific model family. Tickets name a model tier (`small`, `medium`, `large`), and each agent maps the tier to its own models.
 
 Rules: [AGENTS.md](AGENTS.md) and [docs/kanban/protocol.md](docs/kanban/protocol.md).
 
@@ -62,7 +62,9 @@ npx github:earnestangel/Scrum-Kanban-Template upgrade   # refresh protocol, scri
 npx github:earnestangel/Scrum-Kanban-Template doctor    # check Node, CodeGraph, hooks, and the board
 ```
 
-`upgrade` never touches `board.json`, handover notes, or your text outside the marked block in `AGENTS.md`.
+`upgrade` never touches handover notes or your text outside the marked block in `AGENTS.md`. It changes `board.json` only to migrate legacy fields.
+
+Upgrading from 0.1.x: `upgrade` replaces `wip_limit_per_worker` and `max_parallel_workers` with `"wip_limit": 1`. It also maps ticket `model` values `haiku`/`sonnet`/`opus` to `small`/`medium`/`large`. You can delete `.claude/worktrees/` from `.gitignore` and `codegraph.json`.
 
 ## CodeGraph (optional, recommended)
 
@@ -83,7 +85,7 @@ codegraph install
 codegraph init -y
 ```
 
-`codegraph.json` excludes `.claude/worktrees/` (parallel worker checkouts). Add vendored or generated folders there. Check the MCP server with `/mcp` in Claude Code.
+Add vendored or generated folders to `exclude` in `codegraph.json`. Check the MCP server with `/mcp` in Claude Code.
 
 ## What gets installed
 
@@ -114,7 +116,7 @@ Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanba
 | Task | How |
 |---|---|
 | Groom tickets | Coordinator fills the fields in `board.json` (`_ticket_template`) and writes a `GROOMING` entry in `docs/kanban/handovers/<ID>.md`. |
-| Dispatch a worker | Agent tool, `subagent_type: "ticket-worker"`, `model: <ticket.model>`, prompt: ticket ID, worker name, main repo root. Add `isolation: "worktree"` for parallel workers (needs at least one commit). |
+| Run a ticket | Any agent: follow the Worker Procedure in `docs/kanban/protocol.md` section 6.5. Claude Code can instead dispatch the `ticket-worker` subagent with `model` mapped from the tier. Only one ticket runs at a time. |
 | Regenerate the board | `node scripts/kanban/render-board.mjs` |
 | Validate the board (CI) | `node scripts/kanban/render-board.mjs --check` |
 
