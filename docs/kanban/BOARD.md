@@ -7,6 +7,9 @@
 ## ⚡ In Progress
 *None.*
 
+## 🚧 Blocked
+*None.*
+
 ## ⏸️ Paused
 *None.*
 

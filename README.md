@@ -66,6 +66,8 @@ npx github:earnestangel/Scrum-Kanban-Template doctor    # check Node, CodeGraph,
 
 Upgrading from 0.1.x: `upgrade` replaces `wip_limit_per_worker` and `max_parallel_workers` with `"wip_limit": 1`. It also maps ticket `model` values `haiku`/`sonnet`/`opus` to `small`/`medium`/`large`. You can delete `.claude/worktrees/` from `.gitignore` and `codegraph.json`.
 
+Upgrading from 0.2.x: `upgrade` sets `claimed_at` on any `IN_PROGRESS` ticket that has none. Older `DONE` tickets without a coordinator `REVIEW · … · DONE` entry produce warnings only, so CI keeps passing.
+
 ## CodeGraph (optional, recommended)
 
 [CodeGraph](https://github.com/colbymchenry/codegraph) indexes your code so the coordinator can record exact queries during grooming and workers can load the code in one call. Without it, everything still works: hooks turn themselves off and `codegraph_queries` becomes optional in `board.json`.
@@ -117,6 +119,9 @@ Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanba
 |---|---|
 | Groom tickets | Coordinator fills the fields in `board.json` (`_ticket_template`) and writes a `GROOMING` entry in `docs/kanban/handovers/<ID>.md`. |
 | Run a ticket | Any agent: follow the Worker Procedure in `docs/kanban/protocol.md` section 6.5. Claude Code can instead dispatch the `ticket-worker` subagent with `model` mapped from the tier. Only one ticket runs at a time. |
+| Handle a blocker | Worker sets `BLOCKED` with a `blocked_reason` and a `PROGRESS · … · BLOCKED` entry, then stops. That frees the WIP slot. Coordinator resolves it or asks you. |
+| Recover a dead worker | At session start the coordinator checks for an `IN_PROGRESS` claim it did not make, asks you, then records leftover edits and sets `PAUSED` (protocol section 5.3). |
+| Review and close | Coordinator reruns `verify_cmd`, checks acceptance, writes a `REVIEW · … · DONE` or `REWORK` entry (protocol sections 3.2–3.3). |
 | Regenerate the board | `node scripts/kanban/render-board.mjs` |
 | Validate the board (CI) | `node scripts/kanban/render-board.mjs --check` |
 

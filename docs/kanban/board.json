@@ -12,6 +12,8 @@
     "blocks": [],
     "model": "medium",
     "assignee": null,
+    "claimed_at": null,
+    "blocked_reason": null,
     "context": {
       "files": ["src/path/to/file.ts"],
       "symbols": ["ClassName.method", "functionName"],

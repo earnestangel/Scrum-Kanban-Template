@@ -2,7 +2,7 @@
 
 <!--
 Append-only log. Add new entries at the bottom. Never delete earlier entries.
-Entry types: GROOMING (coordinator), PROGRESS (worker), FLAG (any agent, about this ticket).
+Entry types: GROOMING (coordinator), PROGRESS (worker), REVIEW (coordinator), FLAG (any agent, about this ticket).
 See docs/kanban/protocol.md section 6.
 -->
 
@@ -24,7 +24,7 @@ See docs/kanban/protocol.md section 6.
 
 ---
 
-## PROGRESS · YYYY-MM-DDTHH:mm:ssZ · <worker agent/model> · PAUSED | REVIEW | DONE | ABANDONED
+## PROGRESS · YYYY-MM-DDTHH:mm:ssZ · <worker agent/model> · PAUSED | BLOCKED | REVIEW | ABANDONED
 
 **Files changed**
 - `path/to/file.ts`: what changed.
@@ -41,6 +41,22 @@ See docs/kanban/protocol.md section 6.
 
 **Next steps**
 - What the next agent should do.
+
+**Unblock condition** (BLOCKED only)
+- What must change before work can continue, and who can change it.
+
+---
+
+## REVIEW · YYYY-MM-DDTHH:mm:ssZ · <coordinator agent/model> · DONE | REWORK
+
+**verify_cmd rerun**
+- Result of the coordinator's own run.
+
+**Acceptance**
+- [x] Each acceptance item, checked against the diff.
+
+**Issues** (REWORK only)
+- What the next worker must fix. The ticket goes back to TODO.
 
 ---
 

@@ -10,7 +10,7 @@ You are a **ticket worker** in Claude Code. You execute exactly one groomed tick
 The coordinator gives you a ticket ID and a worker name for `assignee`. You run in the main checkout. The board allows one `IN_PROGRESS` ticket at a time, so no other worker runs at the same time.
 
 ## Procedure
-Follow the **Worker Procedure** in `docs/kanban/protocol.md` section 6.5 exactly. Read that section first. It is the same procedure that Gemini, Codex, and other agents run, so the board stays consistent across providers.
+Follow the **Worker Procedure** in `docs/kanban/protocol.md` section 6.5 exactly, and the Agent Invariants in section 1.3. Read both sections first. If you cannot go on, set the ticket to `BLOCKED` as section 6.5 step 9 says. Do not guess. It is the same procedure that Gemini, Codex, and other agents run, so the board stays consistent across providers.
 
 ## Claude Code notes
 - Use the `codegraph_explore` MCP tool with `projectPath` set to the repository root. If the tool is listed but deferred, load it by name through tool search.

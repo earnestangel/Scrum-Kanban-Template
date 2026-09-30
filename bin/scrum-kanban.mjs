@@ -107,8 +107,9 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
   write(rel, next, text ? 'merge' : 'create');
 }
 
-// Migrates boards from 0.1.x: Claude model names become provider-neutral tiers, and the
-// per-worker/parallel WIP keys become one board-wide wip_limit. Writes only if something changed.
+// Migrates older boards. From 0.1.x: Claude model names become provider-neutral tiers, and the
+// per-worker/parallel WIP keys become one board-wide wip_limit. From 0.2.x: IN_PROGRESS tickets
+// get a claimed_at, which the validator now requires. Writes only if something changed.
 function migrateBoard() {
   const rel = 'docs/kanban/board.json';
   const text = read(dest(rel));
@@ -122,9 +123,14 @@ function migrateBoard() {
   }
   const tiers = { haiku: 'small', sonnet: 'medium', opus: 'large' };
   let changed = false;
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   for (const t of [board._ticket_template, ...['epics', 'stories', 'tasks', 'chores', 'bugs'].flatMap((g) => board[g] ?? [])]) {
     if (t && tiers[t.model]) {
       t.model = tiers[t.model];
+      changed = true;
+    }
+    if (t?.status === 'IN_PROGRESS' && !t.claimed_at) {
+      t.claimed_at = now;
       changed = true;
     }
   }

@@ -25,6 +25,26 @@ Tickets name a tier, not a model. Each agent maps the tier to the models its pro
 
 If a provider cannot switch models inside one session, the worker runs on the session's model. The tier then records the intended effort for review.
 
+### 1.3. Agent Invariants
+These are hard lines. `AGENTS.md` repeats them, so every provider loads them.
+
+**Every agent MUST NOT:**
+- Start a ticket that is not a groomed `TODO` (section 3.1) with every `requires` ticket `DONE`.
+- Let a second ticket be `IN_PROGRESS` (section 5.1).
+- Read code, edit files, or run commands for a ticket before claiming it on the board (section 6.1).
+- Edit `BOARD.md` by hand, or delete handover entries.
+- Weaken, skip, or delete tests to make `verify_cmd` pass.
+- Search code before running the ticket's `context.codegraph_queries`, when `.codegraph/` exists (section 7).
+- Commit, push, or open PRs without the user's confirmation. Workers never do.
+
+**The coordinator MUST:**
+- Keep `board.json` authoritative and `BOARD.md` rendered.
+- Groom a ticket before it enters `TODO`.
+- Reconcile orphaned claims at session start (section 5.3).
+- Resolve or escalate every `BLOCKED` ticket.
+- Check the Definition of Done (section 3.3) before it sets `DONE`.
+- Stop and ask the user when an Epic or Story completes (section 8.2).
+
 ---
 
 ## 2. Ticket Hierarchy & Taxonomy
@@ -75,6 +95,26 @@ A ticket may enter `TODO` only when its `board.json` record has all of these fie
 
 The coordinator gets `context` from the CodeGraph calls it makes during grooming. It records the queries that worked so the worker can repeat them instead of searching again.
 
+### 3.2. Ready for Review
+The worker sets `REVIEW` only when all of these are true:
+- `verify_cmd` passes. The `PROGRESS` entry summarizes the output.
+- Every `acceptance` item is met. The `PROGRESS` entry says how.
+- Changes stay inside `context.files`, or each extra file is added to `context.files` and explained.
+- Every `FLAG` entry that targets **this** ticket is addressed in the `PROGRESS` entry.
+- A `## PROGRESS · <date> · <worker> · REVIEW` entry is written and `BOARD.md` is rendered.
+
+If any item cannot be met, the ticket is `BLOCKED` (section 5), not `REVIEW`. `render-board.mjs` rejects a `REVIEW` ticket without the `PROGRESS · … · REVIEW` entry.
+
+### 3.3. Definition of Done
+The coordinator sets `DONE` only when all of these are true:
+- It re-ran `verify_cmd` itself, and the command passes.
+- It checked each `acceptance` item against the diff.
+- It appended a `## REVIEW · <date> · <coordinator> · DONE` entry (section 6.2).
+- It removed this ticket's rows from `HANDOVERS.md`.
+- `BOARD.md` is rendered.
+
+If review fails, the coordinator appends a `REVIEW · … · REWORK` entry that lists the issues, and sets the ticket back to `TODO`. `render-board.mjs` warns about a `DONE` ticket without a `REVIEW · … · DONE` entry, and about `HANDOVERS.md` rows that target closed tickets.
+
 ---
 
 ## 4. Ticket Relationships & Dependencies
@@ -89,20 +129,31 @@ Every ticket defines its relational graph:
 
 ## 5. Board Statuses & WIP Limits
 
-The board has 7 lifecycle states:
+The board has 8 lifecycle states:
 1. `BACKLOG`: Not yet groomed.
 2. `TODO`: Groomed (section 3.1), estimated, ready to pick up once `requires` are `DONE`.
-3. `IN_PROGRESS`: A worker is executing it.
-4. `PAUSED`: Started and put on hold. The handover note explains the current state.
-5. `REVIEW`: Code complete. Coordinator checks quality gates (`lint`, `typecheck`, `test`) and acceptance criteria.
-6. `DONE`: Acceptance criteria verified, tests passing, merged or staged for release.
-7. `ABANDONED`: Permanently closed. Effort spent and the reason are recorded.
+3. `IN_PROGRESS`: A worker is executing it. `assignee` and `claimed_at` are set.
+4. `PAUSED`: On hold by choice (section 5.2) or recovered from an orphaned claim (section 5.3). It can resume at any time. The handover note explains the current state.
+5. `BLOCKED`: The worker cannot go on until something outside the ticket changes (see below).
+6. `REVIEW`: Ready for Review (section 3.2). The coordinator reviews it.
+7. `DONE`: Definition of Done met (section 3.3).
+8. `ABANDONED`: Permanently closed. Effort spent and the reason are recorded.
+
+**When a ticket is `BLOCKED`.** A worker sets `BLOCKED` instead of guessing or pushing on when:
+- a dependency (service, library, credential, another ticket's output) is missing or broken;
+- `verify_cmd` fails for a reason outside `context.files`;
+- the acceptance criteria are unclear or conflict with each other or with the code;
+- the ticket is wrong or too large (for example, 13+ points of work) and needs regrooming.
+
+The worker appends a `PROGRESS · … · BLOCKED` entry with the unblock condition, sets `status: BLOCKED` and a one-line `blocked_reason`, clears `assignee` and `claimed_at`, renders the board, and stops. A `BLOCKED` ticket no longer counts against the WIP limit, so the board keeps moving.
+
+The coordinator owns every `BLOCKED` ticket. It resolves the cause or asks the user. Then it clears `blocked_reason` and moves the ticket to `TODO` (regroomed if needed) or `ABANDONED`.
 
 ### 5.1. WIP Invariant
 - **At most `wip_limit` (1) ticket is `IN_PROGRESS` on the whole board**, whichever agent holds it. `assignee` names that agent (for example `claude`, `gemini`, `codex`).
 - All work happens in the main checkout. There are no parallel workers and no worktrees.
 - WIP 1 is not about speed. Serial work in one checkout is the one model that every AI provider supports: no subagents, no worktree isolation, and no file-locking between agents. It also lets different providers take turns on the same board.
-- `render-board.mjs` enforces the limit and requires an `assignee` on the active ticket.
+- `render-board.mjs` enforces the limit and requires `assignee` and `claimed_at` on the active ticket.
 
 ### 5.2. Interruption & Task-Switching Protocol
 If a worker, the coordinator, or the user wants to start a new ticket while another ticket is `IN_PROGRESS`:
@@ -112,6 +163,17 @@ If a worker, the coordinator, or the user wants to start a new ticket while anot
    - **`ABANDONED`**: Permanently retired with a recorded reason.
 3. Only after that transition may the new ticket enter `IN_PROGRESS`.
 
+### 5.3. Session Start & Recovery
+A worker can die while it holds the only `IN_PROGRESS` slot: a crash, a closed terminal, a context reset, or a subagent that never returns. Under WIP 1 this stops the whole board. So at the start of every session, before it claims anything, the coordinator:
+1. Runs `node scripts/kanban/render-board.mjs --check`. Its output names the active ticket, its `assignee` and `claimed_at`, and the count of `BLOCKED` tickets. It warns when a claim is more than 24 hours old.
+2. If a ticket is `IN_PROGRESS` and this session did not claim it, **asks the user** whether that agent is still running. It does not decide from the timestamp alone.
+3. If the claim is orphaned:
+   - Runs `git status` and `git diff --stat` to see what the dead worker left.
+   - Appends a `## PROGRESS · <date> · <coordinator> · PAUSED` entry that starts with "Recovered from orphaned claim by `<assignee>`". It lists the uncommitted edits under **Files changed**.
+   - Sets `status: PAUSED` and clears `assignee` and `claimed_at`. Renders the board.
+   - Never discards or reverts the dead worker's edits. The next worker resumes from them and the `PROGRESS` entry.
+4. Reviews `BLOCKED` tickets (section 5) before it starts new work.
+
 ---
 
 ## 6. Handover Notes & Knowledge Transfer
@@ -119,16 +181,17 @@ If a worker, the coordinator, or the user wants to start a new ticket while anot
 ### 6.1. Canonical State Files
 - `docs/kanban/board.json`: The only source of truth for tickets, states, estimates, dependencies, and context.
 - `docs/kanban/BOARD.md`: **Generated** from `board.json`. Never edit it by hand. Run `node scripts/kanban/render-board.mjs` after every `board.json` change.
-- **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
+- **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` and `claimed_at` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `BLOCKED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
 - `docs/kanban/handovers/<ID>.md`: One note file per ticket, epic, or story. Template: `docs/kanban/handovers/_TEMPLATE.md`.
 
 ### 6.2. Note Entry Types
-A note file is a log. Agents **append** dated entries; they never delete earlier entries. There are three entry types:
+A note file is a log. Agents **append** dated entries; they never delete earlier entries. There are four entry types:
 
 | Entry | Written by | When | Content |
 |---|---|---|---|
 | `GROOMING` | Coordinator | When the ticket enters `TODO` | Approach, relevant code found, pitfalls, what is out of scope. |
-| `PROGRESS` | Worker | On `PAUSED`, `REVIEW`, `DONE`, `ABANDONED` | Files changed, verification results, decisions, next steps. |
+| `PROGRESS` | Worker (coordinator on recovery) | On `PAUSED`, `BLOCKED`, `REVIEW`, `ABANDONED` | Files changed, verification results, decisions, next steps. `BLOCKED` adds the unblock condition. |
+| `REVIEW` | Coordinator | When it reviews a `REVIEW` ticket | `verify_cmd` rerun result, acceptance checklist, and the outcome `DONE` or `REWORK` with issues. |
 | `FLAG` | Any agent | Any time it finds something that affects **another** ticket | What was found, where (file:line), and why it matters to that ticket. |
 
 `FLAG` entries go into the **target** ticket's note file, not the author's. Example: while working on TASK-042, a worker finds that `UserRepo.save` has no transaction and TASK-050 will depend on it. The worker appends a `FLAG` entry to `handovers/TASK-050.md` (creating it from the template if needed) and adds a line to `HANDOVERS.md`. TASK-050 already lists its own note in `handovers`, so no `board.json` change is needed. If a finding applies to a whole story or epic, append it to that story's or epic's note file instead, and add that ID to the `handovers` field of every affected unstarted ticket.
@@ -145,7 +208,7 @@ Before starting a ticket, a worker reads, in this order:
 - **Claude Code (optional):** dispatch the Agent tool with `subagent_type: "ticket-worker"` and `model` mapped from the tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`). Prompt: ticket ID and worker name. Dispatch one worker at a time. Never use `isolation: "worktree"`.
 
 ### 6.3.2. Review
-At `REVIEW` the coordinator reads the worker's `PROGRESS` entry and `git diff` of `context.files`, reruns `verify_cmd`, and checks each `acceptance` item. It does not re-explore the code.
+At `REVIEW` the coordinator reads the worker's `PROGRESS` entry and `git diff` of `context.files`, reruns `verify_cmd`, and checks each `acceptance` item. It does not re-explore the code. It records the result in a `REVIEW` entry: `DONE` when the Definition of Done (section 3.3) is met, otherwise `REWORK` and the ticket goes back to `TODO`.
 
 ### 6.4. Handover Index
 `docs/kanban/handovers/HANDOVERS.md` lists every `FLAG` entry that is still open, one line each: target ID, source ID, one-line summary. The coordinator removes a line when the target ticket is `DONE` or `ABANDONED`.
@@ -156,21 +219,20 @@ Any agent that executes a ticket follows these steps, whatever its provider. The
 1. **Load the ticket.** Read its record in `board.json`. If `context`, `acceptance`, or `model` is missing, stop and report "ticket is not groomed". Do not groom it.
 2. **Check prerequisites.** Every ID in `requires` must be `DONE`. If not, stop and report which ones are not.
 3. **Read handovers** in the order of section 6.3. Skip files that do not exist. Follow `FLAG` entries: they are warnings from other agents about this ticket.
-4. **Claim the ticket.** In `board.json`, set `status` to `IN_PROGRESS` and `assignee` to the worker name. Run `node scripts/kanban/render-board.mjs`. If it fails with a WIP error, undo the change and stop.
-5. **Load the code with CodeGraph first** (section 7). Run each query in `context.codegraph_queries` with the `codegraph_explore` MCP tool, or with `codegraph explore "<query>"` in the shell when MCP is not available. Treat the returned source as already read. Before an edit, read only the line range you change. If there is no `.codegraph/` directory, start from `context.files`.
+4. **Claim the ticket.** In `board.json`, set `status` to `IN_PROGRESS`, `assignee` to the worker name, and `claimed_at` to the current time in ISO 8601 UTC (for example `2026-09-30T14:05:00Z`). Run `node scripts/kanban/render-board.mjs`. If it fails with a WIP error, undo the change and stop.
+5. **Load the code with CodeGraph first** (section 7). Run **all** queries in `context.codegraph_queries` before any other code search, with the `codegraph_explore` MCP tool, or with `codegraph explore "<query>"` in the shell when MCP is not available. Treat the returned source as already read. Before an edit, read only the line range you change. If there is no `.codegraph/` directory, start from `context.files`.
 6. **Implement.** Change only what the acceptance criteria need. Stay inside `context.files` where possible. If you must change a file that is not listed, add it to `context.files` and say why in the `PROGRESS` entry.
-7. **Verify.** Run `verify_cmd`. Check every item in `acceptance`. Fix failures. Do not weaken or skip tests.
+7. **Verify.** Run `verify_cmd`. Check every item in `acceptance`. Fix failures inside the ticket's scope. Do not weaken or skip tests. If a failure is outside the ticket's scope, the ticket is `BLOCKED` (step 9).
 8. **Flag other tickets.** If you find something that affects a different ticket, story, or epic, append a `FLAG` entry to that note file (section 6.2) and add one line to `HANDOVERS.md`. Do not work on the other ticket.
-9. **Hand over.** Append a `PROGRESS` entry to `handovers/<TICKET-ID>.md` using `_TEMPLATE.md`. Include any new CodeGraph queries that helped. Set `status` to `REVIEW`, or to `PAUSED` if you could not finish. Clear `assignee`. Run `render-board.mjs`.
+9. **Hand over.** Append a `PROGRESS` entry to `handovers/<TICKET-ID>.md` using `_TEMPLATE.md`. Include any new CodeGraph queries that helped. Then set `status`:
+   - `REVIEW` when every Ready for Review item (section 3.2) is true;
+   - `BLOCKED` when a blocker from section 5 stops you. Set `blocked_reason` and write the unblock condition;
+   - `PAUSED` when you must stop for another reason and the work can resume as is.
+
+   Clear `assignee` and `claimed_at`. Run `render-board.mjs`.
 10. **Report** to the coordinator or the user in 10 lines or fewer: status, files changed, `verify_cmd` result, flags raised, open questions.
 
-Hard rules:
-- One ticket only. Never start, groom, or re-estimate another ticket.
-- Never commit, push, or open PRs. The coordinator does that after the user confirms.
-- Never edit `BOARD.md` by hand. It is generated.
-- Board first, work second (section 6.1). Claim the ticket (step 4) before you load code, edit files, or run commands.
-- Never delete handover entries. Only append.
-- If the ticket is wrong or too large (for example, it needs 13+ points of work), set it to `PAUSED`, explain in `PROGRESS`, and stop.
+The Agent Invariants (section 1.3) apply throughout. In addition: work on one ticket only, and never groom or re-estimate another ticket. If the ticket is wrong or too large, set it to `BLOCKED` and stop.
 
 ---
 
@@ -178,7 +240,7 @@ Hard rules:
 
 Agents use CodeGraph before Grep, Glob, or reading whole files, when the repository has a `.codegraph/` index.
 
-1. **Start from the ticket.** Run the `context.codegraph_queries` from the ticket first. They were checked during grooming.
+1. **Start from the ticket.** Run **all** of the ticket's `context.codegraph_queries` before any other code search. They were checked during grooming. This rule applies on every provider. The Claude Code hook in step 3 is only a safety net.
 2. **Then explore.** Call `codegraph_explore` with `projectPath` set to the repository root, naming the symbols or files from `context`.
 3. **Grep, Glob, and shell search are a fallback.** Use them only for non-code text (config values, string literals, log messages) or when CodeGraph returns nothing. In Claude Code, a `PreToolUse` hook denies the first code search per agent (Grep, Glob, whole-file Read of source, `grep`/`rg`/`find`/`cat`/`Select-String`/`Get-Content` in Bash or PowerShell) until CodeGraph is used.
 4. **Ranged Read before Edit.** Edit needs a prior Read. Read only the lines you change, using the line numbers CodeGraph returned.
@@ -222,4 +284,4 @@ Before committing board changes, run:
 node scripts/kanban/render-board.mjs          # validate and regenerate BOARD.md
 node scripts/kanban/render-board.mjs --check  # validate only; fails if BOARD.md is stale
 ```
-The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, model tiers (1.2), the WIP limit (5.1), and story points against the sum of task points.
+The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, model tiers (1.2), the WIP limit and `claimed_at` (5.1, 5.3), `BLOCKED` reasons and entries (5), the Ready for Review entry (3.2), and story points against the sum of task points. It warns about stale claims, `DONE` tickets without a `REVIEW · … · DONE` entry (3.3), and `HANDOVERS.md` rows that target closed tickets.

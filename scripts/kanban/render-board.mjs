@@ -19,7 +19,7 @@ const checkOnly = process.argv.includes('--check');
 const hasIndex = fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'));
 
 const FIB = [1, 2, 3, 5, 8, 13, 21];
-const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'REVIEW', 'DONE', 'ABANDONED'];
+const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'BLOCKED', 'REVIEW', 'DONE', 'ABANDONED'];
 // Provider-neutral model tiers. protocol.md section 1.2 maps them to each provider's models.
 const MODELS = ['small', 'medium', 'large'];
 const LEGACY_MODELS = { haiku: 'small', sonnet: 'medium', opus: 'large' };
@@ -40,7 +40,14 @@ for (const t of all) {
 }
 
 const workable = (t) => t.type !== 'epic';
-const needsGrooming = (t) => workable(t) && ['TODO', 'IN_PROGRESS', 'PAUSED', 'REVIEW'].includes(t.status);
+const needsGrooming = (t) => workable(t) && ['TODO', 'IN_PROGRESS', 'PAUSED', 'BLOCKED', 'REVIEW'].includes(t.status);
+const noteText = (id) => {
+  const f = path.join(handoverDir, `${id}.md`);
+  return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+};
+// Handover entry headers: "## <TYPE> · <ISO date> · <agent> · <STATUS>" (see _TEMPLATE.md).
+const hasEntry = (id, type, status) => new RegExp(`^## ${type} · \\d{4}-.*· ${status}\\b`, 'm').test(noteText(id));
+const STALE_CLAIM_HOURS = 24;
 
 for (const t of all) {
   const at = `${t.id}`;
@@ -69,6 +76,15 @@ for (const t of all) {
   for (const h of t.handovers ?? []) {
     if (!fs.existsSync(path.join(handoverDir, `${h}.md`))) errors.push(`${at}: handovers lists ${h}, but handovers/${h}.md does not exist`);
   }
+  // Escalation (protocol 5): a BLOCKED ticket says why and what would unblock it.
+  if (t.status === 'BLOCKED') {
+    if (!t.blocked_reason) errors.push(`${at}: BLOCKED without a blocked_reason`);
+    if (!hasEntry(t.id, 'PROGRESS', 'BLOCKED')) errors.push(`${at}: BLOCKED but handovers/${t.id}.md has no "## PROGRESS · … · BLOCKED" entry`);
+  } else if (t.blocked_reason) warnings.push(`${at}: is ${t.status} but still has a blocked_reason; clear it`);
+  // Ready for Review (protocol 3.2) and Definition of Done (protocol 3.3).
+  if (t.status === 'REVIEW' && !hasEntry(t.id, 'PROGRESS', 'REVIEW')) errors.push(`${at}: REVIEW but handovers/${t.id}.md has no "## PROGRESS · … · REVIEW" entry`);
+  if (t.status === 'DONE' && workable(t) && !hasEntry(t.id, 'REVIEW', 'DONE')) warnings.push(`${at}: DONE without a "## REVIEW · … · DONE" entry from the coordinator`);
+  if (t.status !== 'IN_PROGRESS' && t.claimed_at) warnings.push(`${at}: is ${t.status} but still has claimed_at; clear it`);
   if (t.status === 'IN_PROGRESS' || t.status === 'REVIEW' || t.status === 'DONE') {
     for (const r of t.requires ?? []) {
       if (byId.get(r) && byId.get(r).status !== 'DONE') errors.push(`${at}: is ${t.status} but prerequisite ${r} is ${byId.get(r).status}`);
@@ -93,8 +109,23 @@ for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
 const active = all.filter((t) => t.status === 'IN_PROGRESS');
 for (const t of active) {
   if (!t.assignee) errors.push(`${t.id}: IN_PROGRESS without an assignee`);
+  // Recovery (protocol 5.3): every claim is timestamped so an orphaned one can be spotted.
+  const since = Date.parse(t.claimed_at ?? '');
+  if (Number.isNaN(since)) errors.push(`${t.id}: IN_PROGRESS without a valid claimed_at (ISO 8601 UTC)`);
+  else if (Date.now() - since > STALE_CLAIM_HOURS * 3600_000) warnings.push(`${t.id}: claimed by ${t.assignee ?? '(none)'} at ${t.claimed_at}, over ${STALE_CLAIM_HOURS}h ago; possible orphaned claim (protocol 5.3)`);
 }
 if (active.length > wip) errors.push(`WIP: ${active.length} tickets in progress (${active.map((t) => t.id).join(', ')}); wip_limit is ${wip}`);
+
+// Open flags whose target is closed should have been removed (protocol 6.4).
+const flagIndex = path.join(handoverDir, 'HANDOVERS.md');
+if (fs.existsSync(flagIndex)) {
+  for (const line of fs.readFileSync(flagIndex, 'utf8').split(/\r?\n/)) {
+    const id = line.match(/^\|\s*`?([A-Z]+-\d+)/)?.[1];
+    const st = id && byId.get(id)?.status;
+    if (st === 'DONE' || st === 'ABANDONED') warnings.push(`HANDOVERS.md: open flag targets ${id}, which is ${st}; remove the line`);
+  }
+}
+const blocked = all.filter((t) => t.status === 'BLOCKED');
 
 // ---------- render ----------
 const esc = (s) => String(s ?? '').replace(/\|/g, '\\|');
@@ -114,6 +145,8 @@ const cols = {
   requires: ['Requires', (t) => (t.requires ?? []).join(', ') || '—'],
   model: ['Model', (t) => t.model ?? '—'],
   assignee: ['Worker', (t) => t.assignee ?? '—'],
+  since: ['Claimed', (t) => t.claimed_at ?? '—'],
+  reason: ['Reason', (t) => t.blocked_reason ?? '—'],
   note: ['Handover', (t) => link(t.id)],
   ready: ['Ready', (t) => ((t.requires ?? []).every((r) => byId.get(r)?.status === 'DONE') ? 'yes' : 'blocked')],
 };
@@ -126,7 +159,9 @@ let md = `# Live Scrum Kanban Board
 > **WIP rule**: at most ${wip} ticket in \`IN_PROGRESS\` on the whole board. Any agent (Claude, Gemini, Codex, or another) may hold it.
 
 ## ⚡ In Progress
-${table(active, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.assignee, cols.model, cols.note])}
+${table(active, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.assignee, cols.since, cols.model, cols.note])}
+## 🚧 Blocked
+${table(blocked, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.reason, cols.note])}
 ## ⏸️ Paused
 ${table(inStatus('PAUSED'), [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note])}
 ## 🎯 To Do
@@ -150,13 +185,14 @@ if (errors.length) {
 }
 
 const current = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : '';
+const summary = `${all.length} tickets, ${active.length} in progress${active.map((t) => ` (${t.id} by ${t.assignee ?? '(none)'} since ${t.claimed_at ?? '?'})`).join('')}, ${blocked.length} blocked`;
 if (checkOnly) {
   if (current.replace(/\r\n/g, '\n') !== md) {
     console.error('BOARD.md is out of date. Run: node scripts/kanban/render-board.mjs');
     process.exit(1);
   }
-  console.log(`board OK: ${all.length} tickets, ${active.length} in progress`);
+  console.log(`board OK: ${summary}`);
 } else {
   fs.writeFileSync(mdPath, md);
-  console.log(`BOARD.md written: ${all.length} tickets, ${active.length} in progress`);
+  console.log(`BOARD.md written: ${summary}`);
 }

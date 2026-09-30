@@ -2,32 +2,56 @@
 ## Scrum Kanban Governance & Standing Operating Rules
 All agents and subagents follow the **Scrum Kanban Protocol** in [docs/kanban/protocol.md](docs/kanban/protocol.md). Summary:
 
-### 1.1. Roles
+### 1.1. Agent Invariants
+These are hard lines for every agent, on every provider (protocol section 1.3).
+
+**Every agent MUST NOT:**
+- Start a ticket that is not a groomed `TODO` with every `requires` ticket `DONE`.
+- Let a second ticket be `IN_PROGRESS`.
+- Read code, edit files, or run commands for a ticket before claiming it on the board.
+- Edit `BOARD.md` by hand, or delete handover entries.
+- Weaken, skip, or delete tests to make `verify_cmd` pass.
+- Search code before running the ticket's `context.codegraph_queries`, when `.codegraph/` exists.
+- Commit, push, or open PRs without the user's confirmation. Workers never do.
+
+**The coordinator MUST:**
+- Keep `board.json` authoritative and `BOARD.md` rendered.
+- Groom a ticket before it enters `TODO`.
+- Reconcile orphaned `IN_PROGRESS` claims at session start (protocol section 5.3).
+- Resolve or escalate every `BLOCKED` ticket.
+- Check the Definition of Done (protocol section 3.3) before it sets `DONE`.
+- Stop and ask the user when an Epic or Story completes.
+
+### 1.2. Roles
 The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and any other agent that reads `AGENTS.md` run the same steps.
 
 - **Coordinator** (main session, strongest available model): grooms tickets, writes `GROOMING` handovers, runs or dispatches the worker, reviews, talks to the user.
 - **Worker**: executes one groomed ticket with the **Worker Procedure** (protocol section 6.5). Any agent can run the procedure inline in the main checkout. Claude Code may instead dispatch the `ticket-worker` subagent (`.claude/agents/ticket-worker.md`), one at a time, with no worktree.
 
-### 1.2. WIP Limit
+### 1.3. WIP Limit & Escalation
 - At most **one** ticket is `IN_PROGRESS` on the whole board (`wip_limit` in `board.json`). The work is serial by design, so every AI provider can run it in one checkout.
 - To start a ticket while another is active: **stop and ask the user** whether to `PAUSE` or `ABANDON` the active one.
+- A worker that cannot go on (missing dependency, failure outside its files, unclear or conflicting acceptance, ticket too large) sets `BLOCKED` with a `blocked_reason` and a `PROGRESS · … · BLOCKED` entry, then stops. `BLOCKED` frees the WIP slot. The coordinator resolves it or asks the user.
+- At session start, if a ticket is `IN_PROGRESS` and this session did not claim it, ask the user whether its agent is still running. If not, record the leftover edits and set it to `PAUSED` (protocol section 5.3).
 
-### 1.3. Grooming
+### 1.4. Grooming, Review, Done
 - Fibonacci points (1, 2, 3, 5, 8, 13, 21). 13+ must be split. Nothing leaves `BACKLOG` without an estimate.
 - `model` is a provider-neutral tier: `small`, `medium`, or `large` (protocol section 1.2 maps tiers to models).
 - A ticket enters `TODO` only when it has `model`, `context` (files, symbols, and codegraph_queries when CodeGraph is installed), `acceptance`, `verify_cmd`, and a `GROOMING` handover entry (protocol section 3.1).
+- A ticket enters `REVIEW` only when `verify_cmd` passes, every `acceptance` item is met, and every `FLAG` on it is addressed in a `PROGRESS · … · REVIEW` entry (protocol section 3.2).
+- A ticket enters `DONE` only after the coordinator reruns `verify_cmd`, checks acceptance against the diff, writes a `REVIEW · … · DONE` entry, and removes its `HANDOVERS.md` rows (protocol section 3.3).
 
-### 1.4. Handover Notes
+### 1.5. Handover Notes
 - `docs/kanban/handovers/<ID>.md` is an append-only log per ticket, story, or epic. Template: `_TEMPLATE.md`.
-- Entry types: `GROOMING` (coordinator), `PROGRESS` (worker, on PAUSED/REVIEW/DONE/ABANDONED), `FLAG` (any agent, written into the **target** ticket's note, and indexed in `HANDOVERS.md`).
+- Entry types: `GROOMING` (coordinator), `PROGRESS` (worker, on PAUSED/BLOCKED/REVIEW/ABANDONED), `REVIEW` (coordinator, DONE or REWORK), `FLAG` (any agent, written into the **target** ticket's note, and indexed in `HANDOVERS.md`).
 - Before starting work, read the epic note, the story note, every note in the ticket's `handovers` field, then the last `PROGRESS` entry of each `requires` ticket.
 
-### 1.5. Board Files
+### 1.6. Board Files
 - `docs/kanban/board.json` is the only source of truth.
 - `docs/kanban/BOARD.md` is generated. After every `board.json` change, run `node scripts/kanban/render-board.mjs`. Never edit `BOARD.md` by hand.
-- **Board first, work second.** Every agent and subagent sets its ticket to `IN_PROGRESS` (with `assignee`) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. Humans must see what agents are working on while the work happens, not after. Every later status change is rendered the moment it happens.
+- **Board first, work second.** Every agent and subagent sets its ticket to `IN_PROGRESS` (with `assignee` and `claimed_at`) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. Humans must see what agents are working on while the work happens, not after. Every later status change is rendered the moment it happens.
 
-### 1.6. Git & PRs
+### 1.7. Git & PRs
 - Branches `feature/|fix/|chore/<TICKET-ID>-<slug>`, PRs target `develop`.
 - When an Epic or Story completes, **stop and ask the user** before committing, pushing, or opening a PR. Workers never commit or push.
 
@@ -49,7 +73,7 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 
 - **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. Pass `projectPath` = repository root. If it's listed but deferred, load it by name via tool search.
 - **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
-- On a ticket, run its `context.codegraph_queries` first. Use Grep/Glob/shell search only for non-code text or when CodeGraph returns nothing. In Claude Code, a hook denies the first code search per agent until CodeGraph is used.
+- On a ticket, run **all** of its `context.codegraph_queries` before any other code search. This applies on every provider. Use Grep/Glob/shell search only for non-code text or when CodeGraph returns nothing. In Claude Code, a hook also denies the first code search per agent until CodeGraph is used, as a safety net.
 - Before Edit, Read only the needed line range (`offset`/`limit`), not the whole file.
 - The index re-syncs on save while a daemon runs; hooks sync at session start and after git checkout/merge/rebase. If results look stale, run `codegraph sync` and retry.
 
