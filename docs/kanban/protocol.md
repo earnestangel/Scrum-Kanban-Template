@@ -4,13 +4,26 @@
 This document defines the **Scrum Kanban Governance & Handover Protocol** for this project.
 These rules are standing operating procedures for all engineering sessions, the coordinator agent, and all sub-agents.
 
-### 1.1. Roles
-| Role | Model | Job |
-|---|---|---|
-| **Coordinator** | Opus (main session) | Grooms tickets, writes grooming handovers, dispatches workers, reviews results, talks to the user. |
-| **Worker** | Sonnet (`.claude/agents/ticket-worker.md`) | Executes one groomed ticket. Does not groom, re-scope, or start other tickets. |
+The protocol is **provider-agnostic**. Claude Code, Gemini CLI, Codex, opencode, and any other agent that reads `AGENTS.md` follow the same steps. Nothing in the core flow needs subagents, worktrees, or a specific model family. Provider-specific extras (Claude Code hooks, the Claude `ticket-worker` subagent) are optional helpers.
 
-The saving comes from doing the expensive exploration **once**, during grooming, and handing the result to a cheaper worker. A worker that has to rediscover the code wastes that saving. Sections 3 and 6 exist to prevent this.
+### 1.1. Roles
+| Role | Tier | Job |
+|---|---|---|
+| **Coordinator** | `large` (main session) | Grooms tickets, writes grooming handovers, runs or dispatches the worker, reviews results, talks to the user. |
+| **Worker** | `ticket.model` | Executes one groomed ticket with the Worker Procedure (section 6.5). Does not groom, re-scope, or start other tickets. |
+
+The saving comes from doing the expensive exploration **once**, during grooming, and handing the result to the worker. The worker can run on a cheaper tier. A worker that has to rediscover the code wastes that saving. Sections 3 and 6 exist to prevent this.
+
+### 1.2. Model Tiers
+Tickets name a tier, not a model. Each agent maps the tier to the models its provider offers. Model names change often, so the tier is the contract. The examples below are a guide.
+
+| Tier | Use for | Claude | Gemini | OpenAI / Codex |
+|---|---|---|---|---|
+| `small` | 1–2 pt mechanical work | Haiku | Flash / Flash-Lite | mini models |
+| `medium` | Default | Sonnet | Pro or Flash | standard models |
+| `large` | Design-heavy or high-risk work, coordination | Opus | Pro | top reasoning models |
+
+If a provider cannot switch models inside one session, the worker runs on the session's model. The tier then records the intended effort for review.
 
 ---
 
@@ -51,7 +64,7 @@ A ticket may enter `TODO` only when its `board.json` record has all of these fie
 | Field | Content |
 |---|---|
 | `points` | Fibonacci estimate. |
-| `model` | Worker model: `sonnet` by default, `haiku` for 1–2 pt mechanical work, `opus` only for design-heavy or high-risk work. |
+| `model` | Worker tier (section 1.2): `medium` by default, `small` for 1–2 pt mechanical work, `large` only for design-heavy or high-risk work. |
 | `context.files` | Files the worker will read or change. |
 | `context.symbols` | Functions, classes, or methods involved. (`files` or `symbols` required.) |
 | `context.entry_points` | Where the flow starts (route, command, handler). Optional. |
@@ -86,15 +99,13 @@ The board has 7 lifecycle states:
 7. `ABANDONED`: Permanently closed. Effort spent and the reason are recorded.
 
 ### 5.1. WIP Invariant
-- Each worker (`assignee`) holds **at most `wip_limit_per_worker` (1)** ticket in `IN_PROGRESS`.
-- At most **`max_parallel_workers`** workers run at the same time (set in `board.json`).
-- Two `IN_PROGRESS` tickets **must not** share a file in `context.files`. If they would, run them one after the other.
-- Parallel workers run in separate git worktrees (Agent tool `isolation: "worktree"`) so their code changes do not collide. Worktrees need at least one commit in the repo.
-- **Shared state stays in the main checkout.** Workers read and write `board.json` and `handovers/` under the main repo root, never the worktree copy. Otherwise WIP checks and FLAGs are invisible to other workers.
-- `render-board.mjs` enforces all three rules.
+- **At most `wip_limit` (1) ticket is `IN_PROGRESS` on the whole board**, whichever agent holds it. `assignee` names that agent (for example `claude`, `gemini`, `codex`).
+- All work happens in the main checkout. There are no parallel workers and no worktrees.
+- WIP 1 is not about speed. Serial work in one checkout is the one model that every AI provider supports: no subagents, no worktree isolation, and no file-locking between agents. It also lets different providers take turns on the same board.
+- `render-board.mjs` enforces the limit and requires an `assignee` on the active ticket.
 
 ### 5.2. Interruption & Task-Switching Protocol
-If a worker, the coordinator, or the user wants to start a new ticket while the same worker already has one `IN_PROGRESS`:
+If a worker, the coordinator, or the user wants to start a new ticket while another ticket is `IN_PROGRESS`:
 1. **Stop.** Do not start the new ticket.
 2. **Ask the user** what happens to the active ticket:
    - **`PAUSED`**: Put on hold. Write a `PROGRESS` handover note (section 6).
@@ -129,14 +140,37 @@ Before starting a ticket, a worker reads, in this order:
 3. Every note listed in the ticket's `handovers` field (its own note, with `GROOMING` and any `FLAG` entries).
 4. The last `PROGRESS` entry of every ticket in `requires`.
 
-### 6.3.1. Dispatching a Worker
-Agent tool, `subagent_type: "ticket-worker"`, `model: <ticket.model>` (the agent file defaults to Sonnet; pass the ticket's model so `haiku`/`opus` grooming takes effect). Prompt: ticket ID, worker name, main repo root. Add `isolation: "worktree"` only when workers run in parallel.
+### 6.3.1. Running the Worker
+- **Any provider:** the coordinator runs the Worker Procedure (section 6.5) itself, in the same session. If the provider can switch models, it switches to the ticket's tier first.
+- **Claude Code (optional):** dispatch the Agent tool with `subagent_type: "ticket-worker"` and `model` mapped from the tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`). Prompt: ticket ID and worker name. Dispatch one worker at a time. Never use `isolation: "worktree"`.
 
 ### 6.3.2. Review
 At `REVIEW` the coordinator reads the worker's `PROGRESS` entry and `git diff` of `context.files`, reruns `verify_cmd`, and checks each `acceptance` item. It does not re-explore the code.
 
 ### 6.4. Handover Index
 `docs/kanban/handovers/HANDOVERS.md` lists every `FLAG` entry that is still open, one line each: target ID, source ID, one-line summary. The coordinator removes a line when the target ticket is `DONE` or `ABANDONED`.
+
+### 6.5. Worker Procedure
+Any agent that executes a ticket follows these steps, whatever its provider. The coordinator already explored the code during grooming and wrote down what it found. The worker uses that work and does not repeat it.
+
+1. **Load the ticket.** Read its record in `board.json`. If `context`, `acceptance`, or `model` is missing, stop and report "ticket is not groomed". Do not groom it.
+2. **Check prerequisites.** Every ID in `requires` must be `DONE`. If not, stop and report which ones are not.
+3. **Read handovers** in the order of section 6.3. Skip files that do not exist. Follow `FLAG` entries: they are warnings from other agents about this ticket.
+4. **Claim the ticket.** In `board.json`, set `status` to `IN_PROGRESS` and `assignee` to the worker name. Run `node scripts/kanban/render-board.mjs`. If it fails with a WIP error, undo the change and stop.
+5. **Load the code with CodeGraph first** (section 7). Run each query in `context.codegraph_queries` with the `codegraph_explore` MCP tool, or with `codegraph explore "<query>"` in the shell when MCP is not available. Treat the returned source as already read. Before an edit, read only the line range you change. If there is no `.codegraph/` directory, start from `context.files`.
+6. **Implement.** Change only what the acceptance criteria need. Stay inside `context.files` where possible. If you must change a file that is not listed, add it to `context.files` and say why in the `PROGRESS` entry.
+7. **Verify.** Run `verify_cmd`. Check every item in `acceptance`. Fix failures. Do not weaken or skip tests.
+8. **Flag other tickets.** If you find something that affects a different ticket, story, or epic, append a `FLAG` entry to that note file (section 6.2) and add one line to `HANDOVERS.md`. Do not work on the other ticket.
+9. **Hand over.** Append a `PROGRESS` entry to `handovers/<TICKET-ID>.md` using `_TEMPLATE.md`. Include any new CodeGraph queries that helped. Set `status` to `REVIEW`, or to `PAUSED` if you could not finish. Clear `assignee`. Run `render-board.mjs`.
+10. **Report** to the coordinator or the user in 10 lines or fewer: status, files changed, `verify_cmd` result, flags raised, open questions.
+
+Hard rules:
+- One ticket only. Never start, groom, or re-estimate another ticket.
+- Never commit, push, or open PRs. The coordinator does that after the user confirms.
+- Never edit `BOARD.md` by hand. It is generated.
+- Board first, work second (section 6.1). Claim the ticket (step 4) before you load code, edit files, or run commands.
+- Never delete handover entries. Only append.
+- If the ticket is wrong or too large (for example, it needs 13+ points of work), set it to `PAUSED`, explain in `PROGRESS`, and stop.
 
 ---
 
@@ -146,9 +180,9 @@ Agents use CodeGraph before Grep, Glob, or reading whole files, when the reposit
 
 1. **Start from the ticket.** Run the `context.codegraph_queries` from the ticket first. They were checked during grooming.
 2. **Then explore.** Call `codegraph_explore` with `projectPath` set to the repository root, naming the symbols or files from `context`.
-3. **Grep, Glob, and shell search are a fallback.** Use them only for non-code text (config values, string literals, log messages) or when CodeGraph returns nothing. A `PreToolUse` hook denies the first code search per agent (Grep, Glob, whole-file Read of source, `grep`/`rg`/`find`/`cat`/`Select-String`/`Get-Content` in Bash or PowerShell) until CodeGraph is used.
+3. **Grep, Glob, and shell search are a fallback.** Use them only for non-code text (config values, string literals, log messages) or when CodeGraph returns nothing. In Claude Code, a `PreToolUse` hook denies the first code search per agent (Grep, Glob, whole-file Read of source, `grep`/`rg`/`find`/`cat`/`Select-String`/`Get-Content` in Bash or PowerShell) until CodeGraph is used.
 4. **Ranged Read before Edit.** Edit needs a prior Read. Read only the lines you change, using the line numbers CodeGraph returned.
-5. **Freshness.** A daemon file watcher re-indexes saved files within about 1 second while a session is open (it stops after 5 idle minutes). `SessionStart` and git hooks run `codegraph sync -q` to cover pulls, branch switches, and offline edits. `codegraph.json` excludes `.claude/worktrees/`, so worker edits never leak into the shared index. If results look stale, run `codegraph sync` and retry.
+5. **Freshness.** A daemon file watcher re-indexes saved files within about 1 second while a session is open (it stops after 5 idle minutes). `SessionStart` and git hooks run `codegraph sync -q` to cover pulls, branch switches, and offline edits. If results look stale, run `codegraph sync` and retry.
 6. **Record new queries.** If a worker needed a query that grooming did not provide, add it to the `PROGRESS` entry so later tickets can reuse it.
 
 If there is no `.codegraph/` directory, use the built-in tools. Indexing is the user's decision.
@@ -188,4 +222,4 @@ Before committing board changes, run:
 node scripts/kanban/render-board.mjs          # validate and regenerate BOARD.md
 node scripts/kanban/render-board.mjs --check  # validate only; fails if BOARD.md is stale
 ```
-The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, WIP limits and file overlap (5.1), and story points against the sum of task points.
+The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, model tiers (1.2), the WIP limit (5.1), and story points against the sum of task points.

@@ -1,7 +1,7 @@
 {
   "name": "scrum-kanban-template",
-  "version": "0.1.0",
-  "description": "Scrum Kanban workflow for AI coding agents: an Opus coordinator grooms tickets, Sonnet workers execute them.",
+  "version": "0.2.0",
+  "description": "Scrum Kanban workflow for AI coding agents: one coordinator grooms tickets, one worker at a time executes them. Works with Claude, Gemini, Codex, and other providers.",
   "type": "module",
   "bin": {
     "scrum-kanban": "bin/scrum-kanban.mjs"

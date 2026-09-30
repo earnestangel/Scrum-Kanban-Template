@@ -2,7 +2,7 @@
 
 <!-- GENERATED from board.json by scripts/kanban/render-board.mjs. Do not edit by hand. -->
 
-> **WIP rule**: each worker holds at most 1 ticket in `IN_PROGRESS`; at most 2 workers run at once; two `IN_PROGRESS` tickets never touch the same file.
+> **WIP rule**: at most 1 ticket in `IN_PROGRESS` on the whole board. Any agent (Claude, Gemini, Codex, or another) may hold it.
 
 ## ⚡ In Progress
 *None.*

@@ -1,7 +1,6 @@
 {
   "$schema": "./protocol.md",
-  "wip_limit_per_worker": 1,
-  "max_parallel_workers": 2,
+  "wip_limit": 1,
   "_ticket_template": {
     "id": "TASK-001",
     "title": "Short imperative title",
@@ -11,7 +10,7 @@
     "children": [],
     "requires": [],
     "blocks": [],
-    "model": "sonnet",
+    "model": "medium",
     "assignee": null,
     "context": {
       "files": ["src/path/to/file.ts"],

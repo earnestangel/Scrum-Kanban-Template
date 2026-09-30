@@ -13,6 +13,7 @@
 //   --no-ci                do not add the GitHub Actions board check
 //
 // Never overwrites project data: board.json, handover notes, and your own text in AGENTS.md stay as they are.
+// The one exception: legacy board.json fields are migrated in place (see migrateBoard).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -106,6 +107,38 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
   write(rel, next, text ? 'merge' : 'create');
 }
 
+// Migrates boards from 0.1.x: Claude model names become provider-neutral tiers, and the
+// per-worker/parallel WIP keys become one board-wide wip_limit. Writes only if something changed.
+function migrateBoard() {
+  const rel = 'docs/kanban/board.json';
+  const text = read(dest(rel));
+  if (text === null) return;
+  let board;
+  try {
+    board = JSON.parse(text);
+  } catch {
+    manual.push(`${rel} is not valid JSON. Fix it, then run upgrade again.`);
+    return;
+  }
+  const tiers = { haiku: 'small', sonnet: 'medium', opus: 'large' };
+  let changed = false;
+  for (const t of [board._ticket_template, ...['epics', 'stories', 'tasks', 'chores', 'bugs'].flatMap((g) => board[g] ?? [])]) {
+    if (t && tiers[t.model]) {
+      t.model = tiers[t.model];
+      changed = true;
+    }
+  }
+  const legacy = ['wip_limit_per_worker', 'max_parallel_workers'];
+  if (legacy.some((k) => k in board)) {
+    // Rebuild so wip_limit sits near the top, where the old keys were.
+    const { $schema, wip_limit = 1, ...rest } = board;
+    for (const k of legacy) delete rest[k];
+    board = { ...($schema ? { $schema } : {}), wip_limit, ...rest };
+    changed = true;
+  }
+  if (changed) write(rel, JSON.stringify(board, null, 2) + '\n', 'migrate');
+}
+
 const between = (text, start, end) => text.slice(text.indexOf(start) + start.length, text.indexOf(end));
 const withBranch = (branch) => (s) => s.replaceAll('`develop`', `\`${branch}\``);
 
@@ -139,6 +172,7 @@ function install(isUpgrade) {
 
   // Project data.
   copyOnce('docs/kanban/board.json');
+  if (!self) migrateBoard();
   copyOnce('docs/kanban/handovers/HANDOVERS.md');
   if (cfg.ci) copyOnce('.github/workflows/kanban-board.yml');
 
@@ -171,7 +205,6 @@ function install(isUpgrade) {
     mergeJson('.mcp.json', (o) => ((o.mcpServers ??= {}).codegraph ??= server));
     mergeJson('.gemini/settings.json', (o) => ((o.mcpServers ??= {}).codegraph ??= server));
     mergeJson('.vscode/mcp.json', (o) => ((o.servers ??= {}).codegraph ??= { ...server, args: [...server.args, '--path', '${workspaceFolder}'] }));
-    mergeJson('codegraph.json', (o) => (o.exclude = [...new Set([...(o.exclude ?? []), '.claude/worktrees/'])]));
     const codex = read(dest('.codex/config.toml')) ?? '';
     if (!codex.includes('[mcp_servers.codegraph]')) appendLines('.codex/config.toml', read(src('.codex/config.toml')).trim().split(/\r?\n/));
     const oc = read(dest('opencode.jsonc'));
@@ -179,7 +212,7 @@ function install(isUpgrade) {
     else if (!oc.includes('codegraph')) manual.push('opencode.jsonc exists: add the "mcp.codegraph" entry from the template by hand.');
   }
 
-  appendLines('.gitignore', ['.claude/worktrees/', '.claude/settings.local.json']);
+  appendLines('.gitignore', ['.claude/settings.local.json']);
   appendLines('.gitattributes', ['scripts/git-hooks/* text eol=lf']);
 
   // Git hooks: only take over core.hooksPath when nothing else owns it.
