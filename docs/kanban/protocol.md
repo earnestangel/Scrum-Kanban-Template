@@ -181,6 +181,7 @@ A worker can die while it holds the only `IN_PROGRESS` slot: a crash, a closed t
 ### 6.1. Canonical State Files
 - `docs/kanban/board.json`: The only source of truth for tickets, states, estimates, dependencies, and context.
 - `docs/kanban/BOARD.md`: **Generated** from `board.json`. Never edit it by hand. Run `node scripts/kanban/render-board.mjs` after every `board.json` change.
+- `scripts/kanban/board-server.mjs`: Read-only web view of `board.json` and the handover notes, for humans. It never changes the board; agents edit `board.json` directly.
 - **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` and `claimed_at` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `BLOCKED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
 - `docs/kanban/handovers/<ID>.md`: One note file per ticket, epic, or story. Template: `docs/kanban/handovers/_TEMPLATE.md`.
 

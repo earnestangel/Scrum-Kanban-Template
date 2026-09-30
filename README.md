@@ -109,6 +109,16 @@ If you use Husky or another hook manager, call them from your own hooks, for exa
 sh scripts/git-hooks/post-merge "$@"
 ```
 
+### Web board (`scripts/kanban/board-server.mjs`)
+
+A Jira-style view of `board.json`: one column per status, cards with type, epic, points, model tier, and assignee, and an epic strip with progress bars. Click a card to see every field of the ticket and its rendered handover notes. Filters and the open ticket live in the URL, so you can share a link.
+
+```sh
+node scripts/kanban/board-server.mjs --open   # http://127.0.0.1:4477
+```
+
+The server has no dependencies, listens on `127.0.0.1` only, and is read-only: it never writes `board.json`. The page reloads by itself when `board.json` or a handover note changes. Options: `--port=<n>` (or `PORT`), `--root=<dir>` to view another project's board.
+
 ### CI (`.github/workflows/kanban-board.yml`)
 
 Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanban/`. It fails when `board.json` is invalid or `BOARD.md` is out of date.
@@ -124,6 +134,7 @@ Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanba
 | Review and close | Coordinator reruns `verify_cmd`, checks acceptance, writes a `REVIEW · … · DONE` or `REWORK` entry (protocol sections 3.2–3.3). |
 | Regenerate the board | `node scripts/kanban/render-board.mjs` |
 | Validate the board (CI) | `node scripts/kanban/render-board.mjs --check` |
+| Open the web board | `node scripts/kanban/board-server.mjs --open` |
 
 ## Contributing
 
