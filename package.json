@@ -25,7 +25,8 @@
   },
   "scripts": {
     "board": "node scripts/kanban/render-board.mjs",
-    "board:check": "node scripts/kanban/render-board.mjs --check"
+    "board:check": "node scripts/kanban/render-board.mjs --check",
+    "board:web": "node scripts/kanban/board-server.mjs --open"
   },
   "repository": {
     "type": "git",

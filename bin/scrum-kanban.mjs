@@ -168,6 +168,8 @@ function install(isUpgrade) {
     'docs/kanban/handovers/_TEMPLATE.md',
     '.claude/agents/ticket-worker.md',
     'scripts/kanban/render-board.mjs',
+    'scripts/kanban/board-server.mjs',
+    'scripts/kanban/board-web/index.html',
     'scripts/hooks/session-sync.mjs',
     'scripts/hooks/prompt-context.mjs',
     'scripts/hooks/codegraph-first.mjs',
