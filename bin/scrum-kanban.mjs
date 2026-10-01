@@ -2,7 +2,7 @@
 // Installs the Scrum Kanban agent workflow into a new or existing repository.
 //
 //   npx github:earnestangel/Scrum-Kanban-Template init     [options]   first install
-//   npx github:earnestangel/Scrum-Kanban-Template upgrade  [options]   refresh protocol, scripts, and agent files
+//   npx github:earnestangel/Scrum-Kanban-Template upgrade  [options]   refresh protocol, scripts, board schema, and marked blocks
 //   npx github:earnestangel/Scrum-Kanban-Template doctor               check the install
 //
 // Options:
@@ -12,8 +12,8 @@
 //   --no-git-hooks         do not set core.hooksPath
 //   --no-ci                do not add the GitHub Actions board check
 //
-// Never overwrites project data: board.json, handover notes, and your own text in AGENTS.md stay as they are.
-// The one exception: legacy board.json fields are migrated in place (see migrateBoard).
+// Never overwrites project data: tickets, handover notes, and your own text outside the marked blocks in
+// AGENTS.md, CLAUDE.md, and GEMINI.md stay as they are. board.json gets schema updates in place (see migrateBoard).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -59,6 +59,20 @@ function copyOwned(rel, transform = (s) => s) {
   const had = fs.existsSync(dest(rel));
   write(rel, transform(read(src(rel))), had ? 'update' : 'create');
   if (!dryRun && rel.startsWith('scripts/git-hooks/')) fs.chmodSync(dest(rel), 0o755);
+}
+
+// Every file under a template directory, as sorted forward-slash paths relative to the repo root.
+function walk(relDir) {
+  return fs
+    .readdirSync(src(relDir), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? walk(`${relDir}/${e.name}`) : e.isFile() ? [`${relDir}/${e.name}`] : []))
+    .sort();
+}
+
+function remove(rel) {
+  if (!fs.existsSync(dest(rel))) return;
+  log.push(`${'delete'.padEnd(8)} ${rel}`);
+  if (!dryRun) fs.rmSync(dest(rel));
 }
 
 // Project data. Created once, never touched again.
@@ -109,7 +123,9 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
 
 // Migrates older boards. From 0.1.x: Claude model names become provider-neutral tiers, and the
 // per-worker/parallel WIP keys become one board-wide wip_limit. From 0.2.x: IN_PROGRESS tickets
-// get a claimed_at, which the validator now requires. Writes only if something changed.
+// get a claimed_at, which the validator now requires. Every version: $schema and _ticket_template
+// follow the template, and top-level keys the template has but the board lacks are added with the
+// template's defaults, in the template's key order. Writes only if something changed.
 function migrateBoard() {
   const rel = 'docs/kanban/board.json';
   const text = read(dest(rel));
@@ -134,15 +150,22 @@ function migrateBoard() {
       changed = true;
     }
   }
-  const legacy = ['wip_limit_per_worker', 'max_parallel_workers'];
-  if (legacy.some((k) => k in board)) {
-    // Rebuild so wip_limit sits near the top, where the old keys were.
-    const { $schema, wip_limit = 1, ...rest } = board;
-    for (const k of legacy) delete rest[k];
-    board = { ...($schema ? { $schema } : {}), wip_limit, ...rest };
-    changed = true;
+  for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
+    if (k in board) {
+      delete board[k];
+      changed = true;
+    }
   }
-  if (changed) write(rel, JSON.stringify(board, null, 2) + '\n', 'migrate');
+  // Schema: template-owned keys are replaced, missing keys are added, project data is kept.
+  const tpl = JSON.parse(read(src(rel)));
+  const next = {};
+  for (const [k, v] of Object.entries(tpl)) {
+    const owned = k === '$schema' || k === '_ticket_template';
+    next[k] = owned || !(k in board) ? v : board[k];
+  }
+  for (const [k, v] of Object.entries(board)) if (!(k in next)) next[k] = v;
+  if (JSON.stringify(next) !== JSON.stringify(board)) changed = true;
+  if (changed) write(rel, JSON.stringify(next, null, 2) + '\n', 'migrate');
 }
 
 const between = (text, start, end) => text.slice(text.indexOf(start) + start.length, text.indexOf(end));
@@ -162,21 +185,12 @@ function install(isUpgrade) {
   };
   const branch = withBranch(cfg.base_branch);
 
-  // Template-owned files.
-  for (const rel of [
-    'docs/kanban/protocol.md',
-    'docs/kanban/handovers/_TEMPLATE.md',
-    '.claude/agents/ticket-worker.md',
-    'scripts/kanban/render-board.mjs',
-    'scripts/kanban/board-server.mjs',
-    'scripts/kanban/board-web/index.html',
-    'scripts/hooks/session-sync.mjs',
-    'scripts/hooks/prompt-context.mjs',
-    'scripts/hooks/codegraph-first.mjs',
-    'scripts/git-hooks/post-checkout',
-    'scripts/git-hooks/post-merge',
-    'scripts/git-hooks/post-rewrite',
-  ]) copyOwned(rel, rel.endsWith('protocol.md') ? branch : undefined);
+  // Template-owned files: everything under scripts/ plus the protocol and agent files. Files the
+  // previous install owned that the template no longer ships are deleted.
+  const owned = ['docs/kanban/protocol.md', 'docs/kanban/handovers/_TEMPLATE.md', '.claude/agents/ticket-worker.md', ...walk('scripts')];
+  for (const rel of owned) copyOwned(rel, rel.endsWith('protocol.md') ? branch : undefined);
+  if (!self) for (const rel of saved.owned ?? []) if (!owned.includes(rel)) remove(rel);
+  cfg.owned = owned;
 
   // Project data.
   copyOnce('docs/kanban/board.json');
@@ -185,12 +199,18 @@ function install(isUpgrade) {
   if (cfg.ci) copyOnce('.github/workflows/kanban-board.yml');
 
   // Agent instructions: one marked block in AGENTS.md; CLAUDE.md and GEMINI.md import it.
+  // A new CLAUDE.md/GEMINI.md is just "@AGENTS.md". An existing one keeps its own text: its marked
+  // block is replaced, or added when the file does not import AGENTS.md yet.
   const agents = read(src('AGENTS.md'));
   if (!self) {
     upsertBlock('AGENTS.md', BLOCK_START, BLOCK_END, branch(between(agents, BLOCK_START, BLOCK_END)));
     if (cfg.codegraph) upsertBlock('AGENTS.md', CG_START, CG_END, between(agents, CG_START, CG_END), { onlyIfMissing: true });
     for (const rel of ['CLAUDE.md', 'GEMINI.md']) {
-      if (!/^@AGENTS\.md\s*$/m.test(read(dest(rel)) ?? '')) appendLines(rel, ['@AGENTS.md']);
+      const text = read(dest(rel));
+      const tpl = read(src(rel)) ?? '';
+      const body = tpl.includes(BLOCK_START) ? between(tpl, BLOCK_START, BLOCK_END) : '@AGENTS.md';
+      if (text === null) write(rel, '@AGENTS.md\n', 'create');
+      else if (text.includes(BLOCK_START) || !/^@AGENTS\.md\s*$/m.test(text)) upsertBlock(rel, BLOCK_START, BLOCK_END, body);
     }
   }
 

@@ -33,12 +33,13 @@ The installer merges into your files. It does not replace them:
 | File | What the installer does |
 |---|---|
 | `AGENTS.md` | Adds the rules between `<!-- scrum-kanban:start -->` and `<!-- scrum-kanban:end -->`. Your own text stays. |
-| `CLAUDE.md`, `GEMINI.md` | Appends `@AGENTS.md` if it is missing. |
+| `CLAUDE.md`, `GEMINI.md` | Creates the file with `@AGENTS.md` if it is missing. In an existing file, adds or replaces the block between `<!-- scrum-kanban:start -->` and `<!-- scrum-kanban:end -->`. A file that already has a bare `@AGENTS.md` line and no block is left as it is. Your own text stays. |
 | `.claude/settings.json` | Adds the hooks and the `mcp__codegraph__*` permission. Your hooks and permissions stay. |
 | `.mcp.json`, `.gemini/settings.json`, `.vscode/mcp.json`, `.codex/config.toml`, `codegraph.json` | Adds a `codegraph` MCP server entry if it is missing. |
 | `.gitignore`, `.gitattributes` | Appends missing lines. |
-| `docs/kanban/board.json`, `handovers/HANDOVERS.md`, `.github/workflows/kanban-board.yml` | Created only if missing. Never overwritten. |
-| `docs/kanban/protocol.md`, `.claude/agents/ticket-worker.md`, `scripts/` | Owned by the template. Replaced on upgrade, so do not edit them. |
+| `docs/kanban/board.json` | Created if missing. Upgrade keeps your tickets, replaces `$schema` and `_ticket_template`, adds missing top-level keys, and migrates legacy fields. |
+| `handovers/HANDOVERS.md`, `.github/workflows/kanban-board.yml` | Created only if missing. Never overwritten. |
+| `docs/kanban/protocol.md`, `handovers/_TEMPLATE.md`, `.claude/agents/ticket-worker.md`, `scripts/` | Owned by the template. Replaced on upgrade, so do not edit them. Template files that a later version removes are deleted on upgrade. The list is saved as `owned` in `.scrum-kanban.json`. |
 | `core.hooksPath` | Set to `scripts/git-hooks` only if no other hook manager (Husky, lefthook, pre-commit, or a custom `core.hooksPath`) is present. Otherwise the installer tells you which hooks to call. |
 
 Files it cannot merge safely (for example an `opencode.jsonc` with comments) are listed as `manual` steps.
@@ -58,15 +59,17 @@ Choices are saved in `.scrum-kanban.json`. Commit that file; `upgrade` reads it.
 ### Upgrade and check
 
 ```sh
-npx github:earnestangel/Scrum-Kanban-Template upgrade   # refresh protocol, scripts, and agent files
+npx github:earnestangel/Scrum-Kanban-Template upgrade   # refresh protocol, scripts, board schema, and marked blocks
 npx github:earnestangel/Scrum-Kanban-Template doctor    # check Node, CodeGraph, hooks, and the board
 ```
 
-`upgrade` never touches handover notes or your text outside the marked block in `AGENTS.md`. It changes `board.json` only to migrate legacy fields.
+`upgrade` never touches handover notes, your tickets, or your text outside the marked blocks in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`. In `board.json` it updates only the schema: `$schema`, `_ticket_template`, missing top-level keys, and legacy fields.
 
 Upgrading from 0.1.x: `upgrade` replaces `wip_limit_per_worker` and `max_parallel_workers` with `"wip_limit": 1`. It also maps ticket `model` values `haiku`/`sonnet`/`opus` to `small`/`medium`/`large`. You can delete `.claude/worktrees/` from `.gitignore` and `codegraph.json`.
 
 Upgrading from 0.2.x: `upgrade` sets `claimed_at` on any `IN_PROGRESS` ticket that has none. Older `DONE` tickets without a coordinator `REVIEW · … · DONE` entry produce warnings only, so CI keeps passing.
+
+Upgrading from 0.3.x: the first `upgrade` records the template-owned files in `.scrum-kanban.json`. From the next upgrade on, files the template drops are deleted.
 
 ## CodeGraph (optional, recommended)
 
