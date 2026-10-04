@@ -13,6 +13,11 @@ These are hard lines for every agent, on every provider (protocol section 1.3).
 - Weaken, skip, or delete tests to make `verify_cmd` pass.
 - Search code before running the ticket's `context.codegraph_queries`, when `.codegraph/` exists.
 - Commit, push, or open PRs without the user's confirmation. Workers never do.
+- Execute a ticket on a model tier other than the ticket's `model`, unless the user approved it for that ticket.
+
+**The coordinator MUST NOT:**
+- Execute a ticket itself. It dispatches a worker on the ticket's tier (protocol section 6.3.1), whatever its own model is.
+- Edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`.
 
 **The coordinator MUST:**
 - Keep `board.json` authoritative and `BOARD.md` rendered.
@@ -25,8 +30,11 @@ These are hard lines for every agent, on every provider (protocol section 1.3).
 ### 1.2. Roles
 The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and any other agent that reads `AGENTS.md` run the same steps.
 
-- **Coordinator** (main session, strongest available model): grooms tickets, writes `GROOMING` handovers, runs or dispatches the worker, reviews, talks to the user.
-- **Worker**: executes one groomed ticket with the **Worker Procedure** (protocol section 6.5). Any agent can run the procedure inline in the main checkout. Claude Code may instead dispatch the `ticket-worker` subagent (`.claude/agents/ticket-worker.md`), one at a time, with no worktree.
+- **Coordinator** (main session, strongest available model): grooms tickets, writes `GROOMING` handovers, dispatches the worker, reviews, talks to the user. It never executes a ticket.
+- **Worker**: executes one groomed ticket with the **Worker Procedure** (protocol section 6.5), on the model that the ticket's tier maps to, one at a time, in the main checkout with no worktree. How to start it on each provider: protocol section 6.3.1.
+  - Claude Code: Agent tool, `subagent_type: "ticket-worker"`, `model` = `haiku` (small), `sonnet` (medium), or `opus` (large). A hook denies other dispatches.
+  - Gemini CLI, Codex, opencode: a subagent or a headless run of the CLI on the tier's model, with the worker prompt from protocol section 6.3.1.
+  - No way to change the model: stop and ask the user to run the worker prompt in a new session on the tier's model. Run it inline only with the user's approval.
 
 ### 1.3. WIP Limit & Escalation
 - At most **one** ticket is `IN_PROGRESS` on the whole board (`wip_limit` in `board.json`). The work is serial by design, so every AI provider can run it in one checkout.

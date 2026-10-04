@@ -71,6 +71,8 @@ Upgrading from 0.2.x: `upgrade` sets `claimed_at` on any `IN_PROGRESS` ticket th
 
 Upgrading from 0.3.x: the first `upgrade` records the template-owned files in `.scrum-kanban.json`. From the next upgrade on, files the template drops are deleted.
 
+Upgrading from 0.4.x: the coordinator no longer runs tickets inline. It starts a worker on the ticket's tier (protocol section 6.3.1). `upgrade` adds the `worker-delegation.mjs` hook to `.claude/settings.json`, also in `--no-codegraph` installs. In Claude Code, a `ticket-worker` dispatch must pass the tier's `model`, and the main session cannot edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`. Your board needs no change. To keep the old inline behavior for a session, set `KANBAN_DELEGATE=off` (for example in `.claude/settings.local.json` under `env`). Other providers get the rule through `AGENTS.md` and the review check; they have no hook.
+
 ## CodeGraph (optional, recommended)
 
 [CodeGraph](https://github.com/colbymchenry/codegraph) indexes your code so the coordinator can record exact queries during grooming and workers can load the code in one call. Without it, everything still works: hooks turn themselves off and `codegraph_queries` becomes optional in `board.json`.
@@ -100,6 +102,7 @@ Add vendored or generated folders to `exclude` in `codegraph.json`. Check the MC
 |---|---|---|
 | `SessionStart` | `scripts/hooks/session-sync.mjs` | Syncs the CodeGraph index; lists open handover flags. |
 | `UserPromptSubmit` | `scripts/hooks/prompt-context.mjs` | Injects CodeGraph context for the prompt (main session only). Does nothing without an index. |
+| `PreToolUse` (Agent, Edit, Write, NotebookEdit) | `scripts/hooks/worker-delegation.mjs` | Enforces worker tiers. Denies a `ticket-worker` dispatch whose `model` does not match the ticket's tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`), or that uses a worktree. While a ticket is `IN_PROGRESS`, denies main-session edits outside `docs/kanban/`, so the coordinator cannot do the worker's job. Installed with or without CodeGraph. `KANBAN_DELEGATE=off` disables it. |
 | `PreToolUse` (Grep, Glob, Read, Bash, PowerShell) | `scripts/hooks/codegraph-first.mjs` | Denies the first code search per agent (Grep/Glob, whole-file Read of source, shell `grep`/`rg`/`find`/`cat`/`Select-String`) until `codegraph_explore` is used. Ranged Reads always pass. `CODEGRAPH_FIRST=strict` denies until CodeGraph is used; `off` disables. |
 
 ### Git hooks (`scripts/git-hooks/`)
@@ -131,7 +134,7 @@ Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanba
 | Task | How |
 |---|---|
 | Groom tickets | Coordinator fills the fields in `board.json` (`_ticket_template`) and writes a `GROOMING` entry in `docs/kanban/handovers/<ID>.md`. |
-| Run a ticket | Any agent: follow the Worker Procedure in `docs/kanban/protocol.md` section 6.5. Claude Code can instead dispatch the `ticket-worker` subagent with `model` mapped from the tier. Only one ticket runs at a time. |
+| Run a ticket | The coordinator starts a worker on the ticket's tier (protocol section 6.3.1): in Claude Code the `ticket-worker` subagent with `model` mapped from the tier; elsewhere a subagent or headless CLI run on the tier's model, or a hand-off to a new session. The coordinator never executes a ticket itself. Only one ticket runs at a time. |
 | Handle a blocker | Worker sets `BLOCKED` with a `blocked_reason` and a `PROGRESS · … · BLOCKED` entry, then stops. That frees the WIP slot. Coordinator resolves it or asks you. |
 | Recover a dead worker | At session start the coordinator checks for an `IN_PROGRESS` claim it did not make, asks you, then records leftover edits and sets `PAUSED` (protocol section 5.3). |
 | Review and close | Coordinator reruns `verify_cmd`, checks acceptance, writes a `REVIEW · … · DONE` or `REWORK` entry (protocol sections 3.2–3.3). |

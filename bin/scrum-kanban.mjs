@@ -214,17 +214,21 @@ function install(isUpgrade) {
     }
   }
 
-  // Claude Code hooks and permissions. Existing entries are kept; ours are added once.
+  // Claude Code hooks and permissions. Existing entries are kept; ours are added once. CodeGraph-only
+  // hooks are skipped with --no-codegraph; the board hooks (session start, worker delegation) are not.
   const tpl = JSON.parse(read(src('.claude/settings.json')));
+  const codegraphOnly = /codegraph-first|prompt-context/;
   mergeJson('.claude/settings.json', (s) => {
     s.permissions ??= {};
     s.permissions.allow = [...new Set([...(s.permissions.allow ?? []), ...(cfg.codegraph ? tpl.permissions.allow : [])])];
     s.hooks ??= {};
     for (const [event, groups] of Object.entries(tpl.hooks)) {
-      if (!cfg.codegraph && event !== 'SessionStart') continue;
-      s.hooks[event] ??= [];
-      const have = JSON.stringify(s.hooks[event]);
-      for (const g of groups) if (!g.hooks.every((h) => have.includes(h.command.replace(/"/g, '\\"')))) s.hooks[event].push(g);
+      for (const g of groups) {
+        if (!cfg.codegraph && g.hooks.some((h) => codegraphOnly.test(h.command))) continue;
+        s.hooks[event] ??= [];
+        const have = JSON.stringify(s.hooks[event]);
+        if (!g.hooks.every((h) => have.includes(h.command.replace(/"/g, '\\"')))) s.hooks[event].push(g);
+      }
     }
   });
 
