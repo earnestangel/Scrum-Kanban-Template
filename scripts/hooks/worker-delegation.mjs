@@ -5,8 +5,9 @@
 //   groomed and startable, `model` must be the ticket's tier mapped to Claude (small→haiku,
 //   medium→sonnet, large→opus), and worktree isolation is refused.
 // - Edit/Write/NotebookEdit while a ticket is IN_PROGRESS: only the ticket-worker subagent may change
-//   project files. The main session (the coordinator) may still edit docs/kanban/ (board and handovers)
-//   and files outside the repository. This stops a large-tier coordinator from doing the worker's job.
+//   project files. The main session (the coordinator) may still edit docs/kanban/ (board and handovers),
+//   paths matched by board.json "coordinator_paths", and files outside the repository. This stops a
+//   large-tier coordinator from doing the worker's job.
 //
 // KANBAN_DELEGATE=off disables the hook, for example when the user explicitly approves inline work.
 
@@ -25,9 +26,9 @@ try {
 }
 
 const root = path.resolve(process.env.CLAUDE_PROJECT_DIR ?? event.cwd ?? process.cwd());
-let tickets;
+let board, tickets;
 try {
-  const board = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'kanban', 'board.json'), 'utf8'));
+  board = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'kanban', 'board.json'), 'utf8'));
   tickets = ['epics', 'stories', 'tasks', 'chores', 'bugs'].flatMap((g) => board[g] ?? []);
 } catch {
   process.exit(0); // No board, or a broken one: render-board.mjs reports that.
@@ -69,12 +70,31 @@ if (event.agent_id && (event.agent_type ?? 'ticket-worker') === 'ticket-worker')
 const file = ti.file_path ?? ti.notebook_path;
 if (!file) process.exit(0);
 const rel = path.relative(root, path.resolve(root, file)).replace(/\\/g, '/');
-if (rel.startsWith('../') || path.isAbsolute(rel) || rel.startsWith('docs/kanban/')) process.exit(0);
+if (rel.startsWith('../') || path.isAbsolute(rel)) process.exit(0);
+
+// Coordinator paths: docs/kanban/ plus the project's "coordinator_paths" globs. "**" spans directories,
+// "*" and "?" stay inside one, and a pattern ending in "/" covers everything below that directory.
+const SEGMENT = { '**/': '(?:.*/)?', '**': '.*', '*': '[^/]*', '?': '[^/]' };
+const globRe = (g) =>
+  new RegExp(
+    '^' +
+      g
+        .replace(/\\/g, '/')
+        .replace(/^\.?\//, '')
+        .replace(/[.+^${}()|[\]]/g, '\\$&')
+        .replace(/\*\*\/|\*\*|\*|\?/g, (m) => SEGMENT[m]) +
+      (g.endsWith('/') ? '' : '$'),
+    process.platform === 'win32' ? 'i' : '',
+  );
+const extra = Array.isArray(board.coordinator_paths) ? board.coordinator_paths : [];
+const allowed = ['docs/kanban/', ...extra].filter((g) => typeof g === 'string' && g.trim());
+if (allowed.some((g) => globRe(g).test(rel))) process.exit(0);
 
 const t = active[0];
 deny(
   `${t.id} is IN_PROGRESS (assignee ${t.assignee ?? 'none'}). Ticket work belongs to the ticket-worker subagent on the ticket's tier, ` +
     `not to ${event.agent_id ? `the ${event.agent_type} subagent` : 'the coordinator'}. ` +
     `Dispatch ticket-worker with model: "${CLAUDE_MODEL[t.model] ?? 'sonnet'}" and let it finish, or, if its worker died, recover the claim (protocol 5.3, 6.3.1). ` +
-    'The coordinator edits only docs/kanban/ while a ticket is active. Inline work needs the user to set KANBAN_DELEGATE=off.',
+    'While a ticket is active the coordinator edits only docs/kanban/ and the "coordinator_paths" globs in board.json; ' +
+    'add a path there only with the user\'s agreement. Inline work needs the user to set KANBAN_DELEGATE=off.',
 );

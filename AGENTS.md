@@ -17,7 +17,7 @@ These are hard lines for every agent, on every provider (protocol section 1.3).
 
 **The coordinator MUST NOT:**
 - Execute a ticket itself. It dispatches a worker on the ticket's tier (protocol section 6.3.1), whatever its own model is.
-- Edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`.
+- Edit files outside `docs/kanban/` and the `coordinator_paths` globs in `board.json` while a ticket is `IN_PROGRESS`.
 
 **The coordinator MUST:**
 - Keep `board.json` authoritative and `BOARD.md` rendered.

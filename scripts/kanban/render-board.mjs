@@ -103,6 +103,11 @@ for (const s of all.filter((t) => t.type === 'story')) {
 // WIP: at most wip_limit tickets IN_PROGRESS on the whole board. Serial work in one checkout
 // is what lets any AI provider run the workflow; see protocol.md section 5.1.
 const wip = board.wip_limit ?? 1;
+// Extra paths the coordinator may edit while a ticket is IN_PROGRESS (read by worker-delegation.mjs).
+const cp = board.coordinator_paths;
+if (cp !== undefined && !(Array.isArray(cp) && cp.every((g) => typeof g === 'string' && g.trim()))) {
+  errors.push('board.json: "coordinator_paths" must be an array of non-empty path globs');
+}
 for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
   if (k in board) warnings.push(`board.json: "${k}" is no longer used; replace it with "wip_limit": 1`);
 }

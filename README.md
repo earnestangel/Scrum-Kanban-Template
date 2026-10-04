@@ -71,7 +71,7 @@ Upgrading from 0.2.x: `upgrade` sets `claimed_at` on any `IN_PROGRESS` ticket th
 
 Upgrading from 0.3.x: the first `upgrade` records the template-owned files in `.scrum-kanban.json`. From the next upgrade on, files the template drops are deleted.
 
-Upgrading from 0.4.x: the coordinator no longer runs tickets inline. It starts a worker on the ticket's tier (protocol section 6.3.1). `upgrade` adds the `worker-delegation.mjs` hook to `.claude/settings.json`, also in `--no-codegraph` installs. In Claude Code, a `ticket-worker` dispatch must pass the tier's `model`, and the main session cannot edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`. Your board needs no change. To keep the old inline behavior for a session, set `KANBAN_DELEGATE=off` (for example in `.claude/settings.local.json` under `env`). Other providers get the rule through `AGENTS.md` and the review check; they have no hook.
+Upgrading from 0.4.x: the coordinator no longer runs tickets inline. It starts a worker on the ticket's tier (protocol section 6.3.1). `upgrade` adds the `worker-delegation.mjs` hook to `.claude/settings.json`, also in `--no-codegraph` installs. In Claude Code, a `ticket-worker` dispatch must pass the tier's `model`, and the main session cannot edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`. `upgrade` also adds `"coordinator_paths": []` to `board.json`: list there any extra files the coordinator may edit while a ticket is active. To keep the old inline behavior for a session, set `KANBAN_DELEGATE=off` (for example in `.claude/settings.local.json` under `env`). Other providers get the rule through `AGENTS.md` and the review check; they have no hook.
 
 ## CodeGraph (optional, recommended)
 
@@ -102,7 +102,7 @@ Add vendored or generated folders to `exclude` in `codegraph.json`. Check the MC
 |---|---|---|
 | `SessionStart` | `scripts/hooks/session-sync.mjs` | Syncs the CodeGraph index; lists open handover flags. |
 | `UserPromptSubmit` | `scripts/hooks/prompt-context.mjs` | Injects CodeGraph context for the prompt (main session only). Does nothing without an index. |
-| `PreToolUse` (Agent, Edit, Write, NotebookEdit) | `scripts/hooks/worker-delegation.mjs` | Enforces worker tiers. Denies a `ticket-worker` dispatch whose `model` does not match the ticket's tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`), or that uses a worktree. While a ticket is `IN_PROGRESS`, denies main-session edits outside `docs/kanban/`, so the coordinator cannot do the worker's job. Installed with or without CodeGraph. `KANBAN_DELEGATE=off` disables it. |
+| `PreToolUse` (Agent, Edit, Write, NotebookEdit) | `scripts/hooks/worker-delegation.mjs` | Enforces worker tiers. Denies a `ticket-worker` dispatch whose `model` does not match the ticket's tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`), or that uses a worktree. While a ticket is `IN_PROGRESS`, denies main-session edits outside `docs/kanban/` and the `coordinator_paths` globs in `board.json` (for example `["CHANGELOG.md", "docs/adr/**"]`), so the coordinator cannot do the worker's job. Installed with or without CodeGraph. `KANBAN_DELEGATE=off` disables it. |
 | `PreToolUse` (Grep, Glob, Read, Bash, PowerShell) | `scripts/hooks/codegraph-first.mjs` | Denies the first code search per agent (Grep/Glob, whole-file Read of source, shell `grep`/`rg`/`find`/`cat`/`Select-String`) until `codegraph_explore` is used. Ranged Reads always pass. `CODEGRAPH_FIRST=strict` denies until CodeGraph is used; `off` disables. |
 
 ### Git hooks (`scripts/git-hooks/`)

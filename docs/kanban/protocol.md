@@ -40,7 +40,7 @@ These are hard lines. `AGENTS.md` repeats them, so every provider loads them.
 
 **The coordinator MUST NOT:**
 - Execute a ticket itself. It dispatches a worker on the ticket's tier (section 6.3.1).
-- Edit files outside `docs/kanban/` while a ticket is `IN_PROGRESS`. That ticket's worker owns the checkout.
+- Edit files outside `docs/kanban/` and `coordinator_paths` (section 6.1) while a ticket is `IN_PROGRESS`. That ticket's worker owns the checkout.
 
 **The coordinator MUST:**
 - Keep `board.json` authoritative and `BOARD.md` rendered.
@@ -185,6 +185,7 @@ A worker can die while it holds the only `IN_PROGRESS` slot: a crash, a closed t
 
 ### 6.1. Canonical State Files
 - `docs/kanban/board.json`: The only source of truth for tickets, states, estimates, dependencies, and context.
+- `coordinator_paths` in `board.json`: path globs the coordinator may edit while a ticket is `IN_PROGRESS`, in addition to `docs/kanban/`. Example: `["CHANGELOG.md", "docs/adr/**", "notes/"]`. `**` spans directories, `*` and `?` stay inside one directory, and a trailing `/` covers a whole directory. Default `[]`. Add a path only with the user's agreement, and never a path that tickets change. The Claude Code hook reads this list; other providers follow it as a rule.
 - `docs/kanban/BOARD.md`: **Generated** from `board.json`. Never edit it by hand. Run `node scripts/kanban/render-board.mjs` after every `board.json` change.
 - `scripts/kanban/board-server.mjs`: Read-only web view of `board.json` and the handover notes, for humans. It never changes the board; agents edit `board.json` directly.
 - **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` and `claimed_at` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `BLOCKED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
@@ -225,7 +226,7 @@ The worker name (for example `claude-small`, `gemini-medium`, `codex-large`) goe
 
 | Provider | Mechanism |
 |---|---|
-| Claude Code | Agent tool, `subagent_type: "ticket-worker"`, `model` mapped from the tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`). Never `isolation: "worktree"`. **Required.** A `PreToolUse` hook (`scripts/hooks/worker-delegation.mjs`) denies a dispatch with the wrong `model`, and denies coordinator edits outside `docs/kanban/` while a ticket is `IN_PROGRESS`. |
+| Claude Code | Agent tool, `subagent_type: "ticket-worker"`, `model` mapped from the tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`). Never `isolation: "worktree"`. **Required.** A `PreToolUse` hook (`scripts/hooks/worker-delegation.mjs`) denies a dispatch with the wrong `model`, and denies coordinator edits outside `docs/kanban/` and `coordinator_paths` while a ticket is `IN_PROGRESS`. |
 | Provider with subagents that take a model (for example opencode agents with `mode: "subagent"`) | Dispatch a subagent on the tier's model with the worker prompt. |
 | Provider with a headless CLI (for example `gemini -m <model> -p "<prompt>"`, `codex exec -m <model> "<prompt>"`, `opencode run -m <provider/model> "<prompt>"`) | Run the CLI in the repository root on the tier's model with the worker prompt. The user decides which approval or sandbox flags the worker gets; ask before the first run. |
 | Any other provider | **Hand off.** Stop. Tell the user the tier's model and the worker prompt, and ask them to run it in a new session on that model. Resume at review when they report back. |
