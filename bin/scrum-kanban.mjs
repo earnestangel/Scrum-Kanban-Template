@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { policyTier, tierProblem } from '../scripts/kanban/tier-policy.mjs';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(fs.readFileSync(path.join(SRC, 'package.json'), 'utf8'));
@@ -125,7 +126,8 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
 // per-worker/parallel WIP keys become one board-wide wip_limit. From 0.2.x: IN_PROGRESS tickets
 // get a claimed_at, which the validator now requires. Every version: $schema and _ticket_template
 // follow the template, and top-level keys the template has but the board lacks are added with the
-// template's defaults, in the template's key order. Writes only if something changed.
+// template's defaults, in the template's key order. From 0.5.x: open tickets get the tier the standing
+// tier rule requires (tier-policy.mjs), unless the user set a tier_override. Writes only if something changed.
 function migrateBoard() {
   const rel = 'docs/kanban/board.json';
   const text = read(dest(rel));
@@ -140,9 +142,17 @@ function migrateBoard() {
   const tiers = { haiku: 'small', sonnet: 'medium', opus: 'large' };
   let changed = false;
   const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  for (const t of [board._ticket_template, ...['epics', 'stories', 'tasks', 'chores', 'bugs'].flatMap((g) => board[g] ?? [])]) {
+  const groups = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
+  const typeOf = new Map(Object.entries(groups).flatMap(([g, type]) => (board[g] ?? []).map((t) => [t, t.type ?? type])));
+  for (const t of [board._ticket_template, ...typeOf.keys()]) {
     if (t && tiers[t.model]) {
       t.model = tiers[t.model];
+      changed = true;
+    }
+    const typed = typeOf.has(t) && { ...t, type: typeOf.get(t) };
+    if (typed && !t.tier_override && tierProblem(typed)) {
+      log.push(`retier   ${t.id}: ${t.model} -> ${policyTier(typed)}`);
+      t.model = policyTier(typed);
       changed = true;
     }
     if (t?.status === 'IN_PROGRESS' && !t.claimed_at) {

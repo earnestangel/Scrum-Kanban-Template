@@ -12,6 +12,7 @@
     "requires": [],
     "blocks": [],
     "model": "medium",
+      "tier_override": null,
     "assignee": null,
     "claimed_at": null,
     "blocked_reason": null,
