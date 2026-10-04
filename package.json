@@ -1,6 +1,6 @@
 {
   "name": "scrum-kanban-template",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Scrum Kanban workflow for AI coding agents: one coordinator grooms tickets, one worker at a time executes them. Works with Claude, Gemini, Codex, and other providers.",
   "type": "module",
   "bin": {
