@@ -79,7 +79,7 @@ Bug (BUG-XXX)
    - **1–2 pts**: Configuration tweak, small documentation update, single isolated test.
    - **3–5 pts**: One service method or endpoint, a schema migration with its repository functions.
    - **8 pts**: Cross-cutting component that touches several modules.
-   - **13+ pts**: Too large. Split into smaller Stories or Tasks before `TODO`.
+   - **13+ pts**: Too large for one unit of work. Split it before `TODO`. A Story split into Tasks may total 13+ points: the limit applies to each Task, Chore, Bug, and to a Story that has no Tasks.
 2. **Pre-Start Estimation Invariant**: No ticket leaves `BACKLOG` without an approved Fibonacci estimate.
 3. **Grooming in Batches**: Groom tickets in clusters by parent Epic or Story.
 

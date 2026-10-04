@@ -43,7 +43,7 @@ The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and
 - At session start, if a ticket is `IN_PROGRESS` and this session did not claim it, ask the user whether its agent is still running. If not, record the leftover edits and set it to `PAUSED` (protocol section 5.3).
 
 ### 1.4. Grooming, Review, Done
-- Fibonacci points (1, 2, 3, 5, 8, 13, 21). 13+ must be split. Nothing leaves `BACKLOG` without an estimate.
+- Fibonacci points (1, 2, 3, 5, 8, 13, 21). 13+ must be split; a Story split into Tasks may total 13+, but each Task stays under 13. Nothing leaves `BACKLOG` without an estimate.
 - `model` is a provider-neutral tier: `small`, `medium`, or `large` (protocol section 1.2 maps tiers to models).
 - A ticket enters `TODO` only when it has `model`, `context` (files, symbols, and codegraph_queries when CodeGraph is installed), `acceptance`, `verify_cmd`, and a `GROOMING` handover entry (protocol section 3.1).
 - A ticket enters `REVIEW` only when `verify_cmd` passes, every `acceptance` item is met, and every `FLAG` on it is addressed in a `PROGRESS · … · REVIEW` entry (protocol section 3.2).

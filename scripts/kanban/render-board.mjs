@@ -53,7 +53,12 @@ for (const t of all) {
   const at = `${t.id}`;
   if (!STATUSES.includes(t.status)) errors.push(`${at}: unknown status "${t.status}"`);
   if (t.status !== 'BACKLOG' && !FIB.includes(t.points)) errors.push(`${at}: points must be one of ${FIB.join(', ')} before leaving BACKLOG`);
-  if (workable(t) && t.points >= 13 && t.status !== 'BACKLOG') errors.push(`${at}: ${t.points} pts is too large; split it before TODO`);
+  // The size limit is for work a worker executes as one unit. A story split into tasks is the sum of
+  // those tasks, so only the tasks are limited; a story with no tasks is executed whole and is limited.
+  const splitStory = t.type === 'story' && all.some((x) => x.type === 'task' && x.parent === t.id);
+  if (workable(t) && !splitStory && t.points >= 13 && t.status !== 'BACKLOG') {
+    errors.push(`${at}: ${t.points} pts is too large; split it${t.type === 'story' ? ' into tasks' : ''} before TODO`);
+  }
   if (t.parent && !byId.has(t.parent)) errors.push(`${at}: parent ${t.parent} does not exist`);
   if (t.type === 'task' && !t.parent) errors.push(`${at}: task has no parent story`);
   for (const r of [...(t.requires ?? []), ...(t.blocks ?? []), ...(t.children ?? [])]) {
