@@ -1,0 +1,8 @@
+#!/bin/sh
+# Board check for every provider: Claude Code, Codex, Gemini, opencode, or a human all commit through git.
+# Installed by: git config core.hooksPath scripts/git-hooks
+# Runs only when docs/kanban/ is staged. See scripts/kanban/precommit-check.mjs for what it checks.
+root="$(git rev-parse --show-toplevel)"
+git diff --cached --name-only | grep -q '^docs/kanban/' || exit 0
+command -v node >/dev/null 2>&1 || { echo "pre-commit: node not found; skipping the board check" >&2; exit 0; }
+exec node "$root/scripts/kanban/precommit-check.mjs"

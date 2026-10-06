@@ -1,0 +1,8 @@
+{
+  "$comment": "Which models count as each tier (protocol.md section 1.2, docs/kanban/providers.md). Only the user edits this file. Patterns match the full model ID, case-insensitive; * matches anything, including '/'. Add the IDs your tools report, for example \"bedrock/global.openai.gpt-6-luna\" or \"gemini-*-pro*\".",
+  "tiers": {
+    "large": ["*opus*"],
+    "medium": ["*sonnet*"],
+    "small": ["*haiku*"]
+  }
+}
