@@ -1,7 +1,7 @@
 {
   "name": "scrum-kanban-template",
-  "version": "0.6.0",
-  "description": "Scrum Kanban workflow for AI coding agents: one coordinator grooms tickets, one worker at a time executes them. Works with Claude, Gemini, Codex, and other providers.",
+  "version": "0.7.0",
+  "description": "Scrum Kanban workflow for AI coding agents: one coordinator grooms tickets, one worker at a time executes them. Works with Claude, Gemini, Codex, opencode, and any model through a user-owned tier map.",
   "type": "module",
   "bin": {
     "scrum-kanban": "bin/scrum-kanban.mjs"
@@ -11,6 +11,8 @@
     "scripts/",
     "docs/kanban/protocol.md",
     "docs/kanban/board.json",
+    "docs/kanban/tiers.json",
+    "docs/kanban/providers.md",
     "docs/kanban/handovers/_TEMPLATE.md",
     "docs/kanban/handovers/HANDOVERS.md",
     ".claude/agents/ticket-worker.md",
@@ -26,7 +28,9 @@
   "scripts": {
     "board": "node scripts/kanban/render-board.mjs",
     "board:check": "node scripts/kanban/render-board.mjs --check",
-    "board:web": "node scripts/kanban/board-server.mjs --open"
+    "board:web": "node scripts/kanban/board-server.mjs --open",
+    "ticket": "node scripts/kanban/ticket.mjs",
+    "test": "node --test"
   },
   "repository": {
     "type": "git",

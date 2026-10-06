@@ -9,7 +9,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TIERS as MODELS, tierProblem } from './tier-policy.mjs';
+import { entryRe, tickets } from './board-lib.mjs';
+import { TIERS as MODELS, TIERS_FILE, loadTierModels, modelFitsTier, requiredTier, tierProblem } from './tier-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const boardPath = path.join(root, 'docs', 'kanban', 'board.json');
@@ -22,16 +23,15 @@ const hasIndex = fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'));
 const FIB = [1, 2, 3, 5, 8, 13, 21];
 const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'BLOCKED', 'REVIEW', 'DONE', 'ABANDONED'];
 const LEGACY_MODELS = { haiku: 'small', sonnet: 'medium', opus: 'large' };
-const GROUPS = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
 
 const board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
 const errors = [];
 const warnings = [];
+// Which models count as each tier. User-owned; see docs/kanban/providers.md.
+const tierModels = loadTierModels(root);
+if (tierModels.problem) errors.push(`${TIERS_FILE}: ${tierModels.problem}`);
 
-const all = [];
-for (const [group, type] of Object.entries(GROUPS)) {
-  for (const t of board[group] ?? []) all.push({ ...t, type: t.type ?? type });
-}
+const all = tickets(board);
 const byId = new Map();
 for (const t of all) {
   if (byId.has(t.id)) errors.push(`${t.id}: ID appears more than once`);
@@ -44,8 +44,8 @@ const noteText = (id) => {
   const f = path.join(handoverDir, `${id}.md`);
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
 };
-// Handover entry headers: "## <TYPE> · <ISO date> · <agent> · <STATUS>" (see _TEMPLATE.md).
-const hasEntry = (id, type, status) => new RegExp(`^## ${type} · \\d{4}-.*· ${status}\\b`, 'm').test(noteText(id));
+// Handover entry headers: "## <TYPE> · <ISO date> · <agent> · <STATUS>" (see _TEMPLATE.md and board-lib.mjs).
+const hasEntry = (id, type, status) => entryRe(type, status).test(noteText(id));
 const STALE_CLAIM_HOURS = 24;
 
 for (const t of all) {
@@ -76,7 +76,7 @@ for (const t of all) {
     if (!(t.handovers ?? []).includes(t.id)) errors.push(`${at}: handovers must include its own note "${t.id}"`);
     const note = path.join(handoverDir, `${t.id}.md`);
     if (!fs.existsSync(note)) errors.push(`${at}: handovers/${t.id}.md is missing; grooming must write it`);
-    else if (!/^## GROOMING · \d{4}-/m.test(fs.readFileSync(note, 'utf8'))) errors.push(`${at}: handovers/${t.id}.md has no dated "## GROOMING ·" entry`);
+    else if (!entryRe('GROOMING').test(fs.readFileSync(note, 'utf8'))) errors.push(`${at}: handovers/${t.id}.md has no dated "## GROOMING ·" entry`);
   }
   for (const h of t.handovers ?? []) {
     if (!fs.existsSync(path.join(handoverDir, `${h}.md`))) errors.push(`${at}: handovers lists ${h}, but handovers/${h}.md does not exist`);
@@ -124,6 +124,12 @@ for (const t of active) {
   if (Number.isNaN(since)) errors.push(`${t.id}: IN_PROGRESS without a valid claimed_at (ISO 8601 UTC)`);
   else if (Date.now() - since > STALE_CLAIM_HOURS * 3600_000) warnings.push(`${t.id}: claimed by ${t.assignee ?? '(none)'} at ${t.claimed_at}, over ${STALE_CLAIM_HOURS}h ago; possible orphaned claim (protocol 5.3)`);
 }
+for (const t of active) {
+  // A warning, not an error: CI cannot see a user's per-ticket approval (KANBAN_INLINE, protocol 6.3.1).
+  if (t.worker_model && !modelFitsTier(t.worker_model, requiredTier(t), tierModels.models)) {
+    warnings.push(`${t.id}: worker model "${t.worker_model}" is not listed for tier "${requiredTier(t)}" in ${TIERS_FILE}; its PROGRESS entry must record the user's approval`);
+  }
+}
 if (active.length > wip) errors.push(`WIP: ${active.length} tickets in progress (${active.map((t) => t.id).join(', ')}); wip_limit is ${wip}`);
 
 // Open flags whose target is closed should have been removed (protocol 6.4).
@@ -153,7 +159,7 @@ const cols = {
   pts: ['Pts', (t) => t.points ?? '?'],
   parent: ['Parent', (t) => t.parent ?? '—'],
   requires: ['Requires', (t) => (t.requires ?? []).join(', ') || '—'],
-  model: ['Model', (t) => t.model ?? '—'],
+  model: ['Model', (t) => (t.model ?? '—') + (t.worker_model ? ` (${t.worker_model})` : '')],
   assignee: ['Worker', (t) => t.assignee ?? '—'],
   since: ['Claimed', (t) => t.claimed_at ?? '—'],
   reason: ['Reason', (t) => t.blocked_reason ?? '—'],

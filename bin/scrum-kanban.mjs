@@ -9,17 +9,18 @@
 //   --dry-run              print what would change, write nothing
 //   --base-branch=<name>   integration branch that PRs target (default: develop, or the value saved at init)
 //   --no-codegraph         skip CodeGraph MCP configs and codegraph.json
-//   --no-git-hooks         do not set core.hooksPath
+//   --no-git-hooks         do not set core.hooksPath (pre-commit board check, CodeGraph sync)
 //   --no-ci                do not add the GitHub Actions board check
 //
 // Never overwrites project data: tickets, handover notes, and your own text outside the marked blocks in
 // AGENTS.md, CLAUDE.md, and GEMINI.md stay as they are. board.json gets schema updates in place (see migrateBoard).
+// docs/kanban/tiers.json (which models count as each tier) is created once and then belongs to the user.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { policyTier, tierProblem } from '../scripts/kanban/tier-policy.mjs';
+import { TIERS, aliasForTier, loadTierModels, modelFitsTier, policyTier, resolveClaudeAlias, tierProblem } from '../scripts/kanban/tier-policy.mjs';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(fs.readFileSync(path.join(SRC, 'package.json'), 'utf8'));
@@ -197,13 +198,14 @@ function install(isUpgrade) {
 
   // Template-owned files: everything under scripts/ plus the protocol and agent files. Files the
   // previous install owned that the template no longer ships are deleted.
-  const owned = ['docs/kanban/protocol.md', 'docs/kanban/handovers/_TEMPLATE.md', '.claude/agents/ticket-worker.md', ...walk('scripts')];
+  const owned = ['docs/kanban/protocol.md', 'docs/kanban/providers.md', 'docs/kanban/handovers/_TEMPLATE.md', '.claude/agents/ticket-worker.md', ...walk('scripts')];
   for (const rel of owned) copyOwned(rel, rel.endsWith('protocol.md') ? branch : undefined);
   if (!self) for (const rel of saved.owned ?? []) if (!owned.includes(rel)) remove(rel);
   cfg.owned = owned;
 
   // Project data.
   copyOnce('docs/kanban/board.json');
+  copyOnce('docs/kanban/tiers.json');
   if (!self) migrateBoard();
   copyOnce('docs/kanban/handovers/HANDOVERS.md');
   if (cfg.ci) copyOnce('.github/workflows/kanban-board.yml');
@@ -257,14 +259,15 @@ function install(isUpgrade) {
   appendLines('.gitignore', ['.claude/settings.local.json']);
   appendLines('.gitattributes', ['scripts/git-hooks/* text eol=lf']);
 
-  // Git hooks: only take over core.hooksPath when nothing else owns it.
-  if (!flag('no-git-hooks') && cfg.codegraph) {
+  // Git hooks: only take over core.hooksPath when nothing else owns it. pre-commit checks the board for
+  // every provider; the post-* hooks sync CodeGraph and do nothing without it.
+  if (!flag('no-git-hooks')) {
     const hp = git('-C', DEST, 'config', '--get', 'core.hooksPath').stdout.trim();
     const other = ['.husky', 'lefthook.yml', '.pre-commit-config.yaml'].find((f) => fs.existsSync(dest(f)));
     if (hp === 'scripts/git-hooks') {
       // already set
     } else if (hp || other) {
-      manual.push(`Git hooks are managed by ${hp ? `core.hooksPath=${hp}` : other}. Call scripts/git-hooks/post-{checkout,merge,rewrite} from your own hooks.`);
+      manual.push(`Git hooks are managed by ${hp ? `core.hooksPath=${hp}` : other}. Call scripts/git-hooks/pre-commit and post-{checkout,merge,rewrite} from your own hooks.`);
     } else if (top.status === 0) {
       log.push('git      config core.hooksPath scripts/git-hooks');
       if (!dryRun) git('-C', DEST, 'config', 'core.hooksPath', 'scripts/git-hooks');
@@ -299,8 +302,21 @@ function doctor() {
   if (wantCg) {
     ok(cg.status === 0, `codegraph CLI ${cg.status === 0 ? cg.stdout.trim() : 'not found'}`, 'Optional. Install it for cheaper workers; see README.');
     ok(fs.existsSync(dest('.codegraph/codegraph.db')), 'CodeGraph index', 'Optional. Run: codegraph init -y');
-    const hp = git('-C', DEST, 'config', '--get', 'core.hooksPath').stdout.trim();
-    ok(hp === 'scripts/git-hooks', `core.hooksPath = ${hp || '(unset)'}`, 'Optional. Run: git config core.hooksPath scripts/git-hooks');
+  }
+  const hp = git('-C', DEST, 'config', '--get', 'core.hooksPath').stdout.trim();
+  ok(hp === 'scripts/git-hooks', `core.hooksPath = ${hp || '(unset)'}`, 'Recommended: the pre-commit board check works for every provider. Run: git config core.hooksPath scripts/git-hooks');
+  // Which models count as each tier, and what the Claude Code aliases resolve to in this shell.
+  const tiers = loadTierModels(DEST);
+  ok(!tiers.problem, `tier map (${tiers.source}): ${TIERS.map((k) => `${k} = ${tiers.models[k].join(' | ')}`).join('; ')}`, `Fix docs/kanban/tiers.json: ${tiers.problem}`);
+  for (const tier of TIERS) {
+    const alias = aliasForTier(tier, tiers.models);
+    const { model, via } = resolveClaudeAlias(alias ?? '');
+    ok(!!alias, `Claude Code tier ${tier}: ${alias ? `model "${alias}"${via ? ` runs ${model} (${via})` : ''}` : 'no alias resolves to a listed model'}`,
+      'Optional, for Claude Code workers. List the model your alias runs in docs/kanban/tiers.json, or set ANTHROPIC_DEFAULT_<ALIAS>_MODEL. See docs/kanban/providers.md.');
+  }
+  if (process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
+    const m = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+    ok(TIERS.every((k) => modelFitsTier(m, k, tiers.models)), `CLAUDE_CODE_SUBAGENT_MODEL=${m} forces every worker onto one model`, 'Workers on other tiers will be denied. Unset it, or see docs/kanban/providers.md.');
   }
   const r = spawnSync(process.execPath, [dest('scripts/kanban/render-board.mjs'), '--check'], { encoding: 'utf8' });
   ok(r.status === 0, `board check: ${(r.stdout || r.stderr).trim().split('\n').pop()}`, 'Fix the errors above, then run: node scripts/kanban/render-board.mjs');

@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { agentTranscript } from './hook-lib.mjs';
 
 const mode = process.env.CODEGRAPH_FIRST ?? 'remind';
 if (mode === 'off') process.exit(0);
@@ -53,14 +54,12 @@ const indexRoot = findIndex(cwd);
 if (!indexRoot) process.exit(0);
 
 // Sub-agents share the parent's session_id, so key the marker on agent_id too: each worker gets its
-// own reminder. Their transcript lives next to the parent's; never use the parent's transcript for a
-// sub-agent, or a coordinator's codegraph call would exempt every worker.
+// own reminder. agentTranscript never returns the parent's transcript for a sub-agent, or a
+// coordinator's codegraph call would exempt every worker.
 const who = `${event.session_id ?? 'nosession'}-${event.agent_id ?? 'main'}`.replace(/[^\w.-]/g, '_');
 const tmp = os.tmpdir();
 const marker = path.join(tmp, `codegraph-first-${who}`);
-const transcript = event.agent_id && !/[\\/]subagents[\\/]/.test(event.transcript_path ?? '')
-  ? path.join(path.dirname(event.transcript_path ?? ''), event.session_id ?? '', 'subagents', `agent-${event.agent_id}.jsonl`)
-  : event.transcript_path;
+const transcript = agentTranscript(event);
 // Match an actual tool call (MCP or CLI), not a mention of the tool name in loaded instructions.
 const usedCodegraph = () => {
   try {

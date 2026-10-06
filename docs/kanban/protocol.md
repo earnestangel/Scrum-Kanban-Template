@@ -15,7 +15,7 @@ The protocol is **provider-agnostic**. Claude Code, Gemini CLI, Codex, opencode,
 The saving comes from doing the expensive exploration **once**, during grooming, and handing the result to the worker. The worker can run on a cheaper tier. A worker that has to rediscover the code wastes that saving. Sections 3 and 6 exist to prevent this.
 
 ### 1.2. Model Tiers
-Tickets name a tier, not a model. Each agent maps the tier to the models its provider offers. Model names change often, so the tier is the contract. The model columns below are a guide.
+Tickets name a tier, not a model. Model names change often, so the tier is the contract. The model columns below are a guide. **`docs/kanban/tiers.json`** is the project's binding map: it lists the model IDs that count as each tier (patterns, for example `"medium": ["*sonnet*", "*gpt-6-luna*"]`). Without the file, Claude models only: `*opus*`, `*sonnet*`, `*haiku*`. **Only the user** edits `tiers.json`. Setup per tool and gateway (LiteLLM, Bedrock, Codex, Gemini, opencode, others): [providers.md](providers.md).
 
 **Standing tier rule.** The tier follows from the ticket. Grooming does not choose it, and no agent may negotiate it, for any provider:
 
@@ -41,8 +41,10 @@ These are hard lines. `AGENTS.md` repeats them, so every provider loads them.
 - Search code before running the ticket's `context.codegraph_queries`, when `.codegraph/` exists (section 7).
 - Commit, push, or open PRs without the user's confirmation. Workers never do.
 - Execute a ticket on a model tier other than the ticket's `model`, unless the user approved it for that ticket (section 6.3.1).
-- Set a ticket's `model` to a tier other than the standing tier rule requires, or write a `tier_override` (section 1.2). Only the user does.
-- Groom, review, or update the board as coordinator on a tier below `large` (section 1.1).
+- Set a ticket's `model` to a tier other than the standing tier rule requires, write a `tier_override`, or edit `docs/kanban/tiers.json` (section 1.2). Only the user does.
+- Pass a `--model` to `ticket.mjs` other than the model it really runs on, or set the user switches `KANBAN_INLINE`, `KANBAN_ALLOW_TIER_EDIT`, or `KANBAN_DELEGATE` ([providers.md section 11](providers.md#11-user-switches)).
+- Change ticket state (`status`, `assignee`, `claimed_at`, `worker_model`, `blocked_reason`) or write entry headers by hand when `scripts/kanban/ticket.mjs` can do it (section 6.1).
+- Groom, review, or update the board as coordinator on a model not listed for `large` in `tiers.json` (section 1.1).
 
 **The coordinator MUST NOT:**
 - Execute a ticket itself. It dispatches a worker on the ticket's tier (section 6.3.1).
@@ -180,8 +182,7 @@ A worker can die while it holds the only `IN_PROGRESS` slot: a crash, a closed t
 2. If a ticket is `IN_PROGRESS` and this session did not claim it, **asks the user** whether that agent is still running. It does not decide from the timestamp alone.
 3. If the claim is orphaned:
    - Runs `git status` and `git diff --stat` to see what the dead worker left.
-   - Appends a `## PROGRESS · <date> · <coordinator> · PAUSED` entry that starts with "Recovered from orphaned claim by `<assignee>`". It lists the uncommitted edits under **Files changed**.
-   - Sets `status: PAUSED` and clears `assignee` and `claimed_at`. Renders the board.
+   - Runs `node scripts/kanban/ticket.mjs recover <ID> --coordinator <name> --model <model-id>`. It appends a `## PROGRESS · <date> · <coordinator> · PAUSED` entry that starts with "Recovered from orphaned claim by `<assignee>`" and lists the uncommitted edits under **Files changed**, sets `status: PAUSED`, clears `assignee`, `claimed_at`, and `worker_model`, and renders the board.
    - Never discards or reverts the dead worker's edits. The next worker resumes from them and the `PROGRESS` entry.
 4. Reviews `BLOCKED` tickets (section 5) before it starts new work.
 
@@ -193,7 +194,9 @@ A worker can die while it holds the only `IN_PROGRESS` slot: a crash, a closed t
 - `docs/kanban/board.json`: The only source of truth for tickets, states, estimates, dependencies, and context.
 - `coordinator_paths` in `board.json`: path globs the coordinator may edit while a ticket is `IN_PROGRESS`, in addition to `docs/kanban/`. Example: `["CHANGELOG.md", "docs/adr/**", "notes/"]`. `**` spans directories, `*` and `?` stay inside one directory, and a trailing `/` covers a whole directory. Default `[]`. Add a path only with the user's agreement, and never a path that tickets change. The Claude Code hook reads this list; other providers follow it as a rule.
 - `docs/kanban/BOARD.md`: **Generated** from `board.json`. Never edit it by hand. Run `node scripts/kanban/render-board.mjs` after every `board.json` change.
-- `scripts/kanban/board-server.mjs`: Read-only web view of `board.json` and the handover notes, for humans. It never changes the board; agents edit `board.json` directly.
+- `scripts/kanban/board-server.mjs`: Read-only web view of `board.json` and the handover notes, for humans. It never changes the board.
+- `scripts/kanban/ticket.mjs`: the board commands every agent uses, on every provider: `claim`, `handover`, `note` (GROOMING, FLAG), `review`, `recover`, `show`. They change ticket state, write canonical entry headers, check the tier against `tiers.json`, and render the board, or change nothing if the board does not validate. Agents edit the grooming fields (`context`, `acceptance`, `verify_cmd`, ...) in `board.json` directly, and never write `board.json` with shell redirects. Commands: [providers.md section 3](providers.md#3-board-commands-ticketmjs).
+- `docs/kanban/tiers.json`: which model IDs count as each tier (section 1.2). User-owned.
 - **Board first, work second.** Every agent and subagent claims its ticket (`status: IN_PROGRESS`, `assignee` and `claimed_at` set) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. `BOARD.md` must show what agents are working on while the work happens, not after it finishes. Every later status change (`PAUSED`, `BLOCKED`, `REVIEW`, `DONE`, `ABANDONED`) is rendered the moment it happens.
 - `docs/kanban/handovers/<ID>.md`: One note file per ticket, epic, or story. Template: `docs/kanban/handovers/_TEMPLATE.md`.
 
@@ -222,7 +225,7 @@ The coordinator never runs the Worker Procedure (section 6.5) itself. It starts 
 **Worker prompt.** Every provider uses the same prompt, so workers behave the same:
 
 ```text
-Ticket: <TICKET-ID>. Worker name: <provider>-<tier>.
+Ticket: <TICKET-ID>. Worker name: <provider>-<tier>. Model ID: <model-id>.
 You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3.
 ```
 
@@ -232,15 +235,15 @@ The worker name (for example `claude-small`, `gemini-medium`, `codex-large`) goe
 
 | Provider | Mechanism |
 |---|---|
-| Claude Code | Agent tool, `subagent_type: "ticket-worker"`, `model` mapped from the tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`). Never `isolation: "worktree"`. **Required.** A `PreToolUse` hook (`scripts/hooks/worker-delegation.mjs`) denies a dispatch with the wrong `model` or a ticket whose tier breaks the rule, denies board and handover edits from a main session that does not run Opus, denies any agent edit that adds or changes a `tier_override`, and denies coordinator edits outside `docs/kanban/` and `coordinator_paths` while a ticket is `IN_PROGRESS`. |
+| Claude Code | Agent tool, `subagent_type: "ticket-worker"`, `model` = an alias that resolves to a model listed for the tier (by default `small`→`haiku`, `medium`→`sonnet`, `large`→`opus`; with LiteLLM or another gateway, see [providers.md section 5](providers.md#5-claude-code-with-other-models-litellm-bedrock-vertex-gateways)). Never `isolation: "worktree"`. **Required.** A `PreToolUse` hook (`scripts/hooks/worker-delegation.mjs`) resolves the alias through `ANTHROPIC_DEFAULT_*_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`, and denies a dispatch whose model is not listed for the ticket's tier. It also denies: a claim from an agent whose real model (from its transcript) is not listed for the tier; grooming, review, and board edits from a main session whose model is not listed for `large`; a claim by the coordinator; any agent change to a `tier_override` or `tiers.json`; shell writes to `board.json`; and coordinator edits outside `docs/kanban/` and `coordinator_paths` while a ticket is `IN_PROGRESS`. |
 | Provider with subagents that take a model (for example opencode agents with `mode: "subagent"`) | Dispatch a subagent on the tier's model with the worker prompt. |
 | Provider with a headless CLI (for example `gemini -m <model> -p "<prompt>"`, `codex exec -m <model> "<prompt>"`, `opencode run -m <provider/model> "<prompt>"`) | Run the CLI in the repository root on the tier's model with the worker prompt. The user decides which approval or sandbox flags the worker gets; ask before the first run. |
 | Any other provider | **Hand off.** Stop. Tell the user the tier's model and the worker prompt, and ask them to run it in a new session on that model. Resume at review when they report back. |
 
-**Inline execution** on the coordinator's model is allowed only when the user approves it for that ticket, after being told the tier mismatch. Record the approval in the `PROGRESS` entry. In Claude Code the user also sets `KANBAN_DELEGATE=off` for that session.
+**Inline execution** on the coordinator's model, or on any model not listed for the ticket's tier, is allowed only when the user approves it for that ticket, after being told the tier mismatch. The user grants it by starting the session with `KANBAN_INLINE=<TICKET-ID>`; `ticket.mjs claim` and the Claude Code hooks then accept the mismatch for that ticket only. Record the approval in the `PROGRESS` entry. Grooming, review, `tier_override`, and `tiers.json` stay protected. Resuming a ticket on another model: [providers.md section 10](providers.md#10-resuming-a-ticket-on-another-model).
 
 ### 6.3.2. Review
-At `REVIEW` the coordinator reads the worker's `PROGRESS` entry and `git diff` of `context.files`, reruns `verify_cmd`, and checks each `acceptance` item. It checks that the `PROGRESS` entry header names a worker on the ticket's tier. A mismatch without recorded user approval goes into the `REVIEW` entry under **Worker tier**. It does not re-explore the code. It records the result in a `REVIEW` entry: `DONE` when the Definition of Done (section 3.3) is met, otherwise `REWORK` and the ticket goes back to `TODO`.
+At `REVIEW` the coordinator reads the worker's `PROGRESS` entry and `git diff` of `context.files`, reruns `verify_cmd`, and checks each `acceptance` item. It checks that the `PROGRESS` entry header names a worker and model listed for the ticket's tier in `tiers.json`. A mismatch without recorded user approval goes into the `REVIEW` entry under **Worker tier**. It does not re-explore the code. It records the result in a `REVIEW` entry: `DONE` when the Definition of Done (section 3.3) is met, otherwise `REWORK` and the ticket goes back to `TODO`.
 
 ### 6.4. Handover Index
 `docs/kanban/handovers/HANDOVERS.md` lists every `FLAG` entry that is still open, one line each: target ID, source ID, one-line summary. The coordinator removes a line when the target ticket is `DONE` or `ABANDONED`.
@@ -251,17 +254,17 @@ Any agent that executes a ticket follows these steps, whatever its provider. The
 1. **Load the ticket.** Read its record in `board.json`. If `context`, `acceptance`, or `model` is missing, stop and report "ticket is not groomed". Do not groom it.
 2. **Check prerequisites.** Every ID in `requires` must be `DONE`. If not, stop and report which ones are not.
 3. **Read handovers** in the order of section 6.3. Skip files that do not exist. Follow `FLAG` entries: they are warnings from other agents about this ticket.
-4. **Claim the ticket.** In `board.json`, set `status` to `IN_PROGRESS`, `assignee` to the worker name, and `claimed_at` to the current time in ISO 8601 UTC (for example `2026-09-30T14:05:00Z`). Run `node scripts/kanban/render-board.mjs`. If it fails with a WIP error, undo the change and stop.
+4. **Claim the ticket.** Run `node scripts/kanban/ticket.mjs claim <ID> --worker <worker name> --model <the model ID you run on>`. It sets `status` to `IN_PROGRESS`, `assignee`, `claimed_at` (ISO 8601 UTC), and `worker_model`, and renders the board. It refuses when the WIP slot is taken, a `requires` ticket is not `DONE`, or your model is not listed for the ticket's tier. On a refusal, stop and report it; do not work around it.
 5. **Load the code with CodeGraph first** (section 7). Run **all** queries in `context.codegraph_queries` before any other code search, with the `codegraph_explore` MCP tool, or with `codegraph explore "<query>"` in the shell when MCP is not available. Treat the returned source as already read. Before an edit, read only the line range you change. If there is no `.codegraph/` directory, start from `context.files`.
 6. **Implement.** Change only what the acceptance criteria need. Stay inside `context.files` where possible. If you must change a file that is not listed, add it to `context.files` and say why in the `PROGRESS` entry.
 7. **Verify.** Run `verify_cmd`. Check every item in `acceptance`. Fix failures inside the ticket's scope. Do not weaken or skip tests. If a failure is outside the ticket's scope, the ticket is `BLOCKED` (step 9).
 8. **Flag other tickets.** If you find something that affects a different ticket, story, or epic, append a `FLAG` entry to that note file (section 6.2) and add one line to `HANDOVERS.md`. Do not work on the other ticket.
-9. **Hand over.** Append a `PROGRESS` entry to `handovers/<TICKET-ID>.md` using `_TEMPLATE.md`. Include any new CodeGraph queries that helped. Then set `status`:
+9. **Hand over.** Write the `PROGRESS` entry body from `_TEMPLATE.md` (no header line; the script writes it) and run `node scripts/kanban/ticket.mjs handover <ID> --status <STATUS> --body <file|->` (add `--reason "<text>"` for `BLOCKED`). Include any new CodeGraph queries that helped. Pick the status:
    - `REVIEW` when every Ready for Review item (section 3.2) is true;
    - `BLOCKED` when a blocker from section 5 stops you. Set `blocked_reason` and write the unblock condition;
    - `PAUSED` when you must stop for another reason and the work can resume as is.
 
-   Clear `assignee` and `claimed_at`. Run `render-board.mjs`.
+   The command clears `assignee`, `claimed_at`, and `worker_model`, and renders the board.
 10. **Report** to the coordinator or the user in 10 lines or fewer: status, files changed, `verify_cmd` result, flags raised, open questions.
 
 The Agent Invariants (section 1.3) apply throughout. In addition: work on one ticket only, and never groom or re-estimate another ticket. If the ticket is wrong or too large, set it to `BLOCKED` and stop.
@@ -316,4 +319,6 @@ Before committing board changes, run:
 node scripts/kanban/render-board.mjs          # validate and regenerate BOARD.md
 node scripts/kanban/render-board.mjs --check  # validate only; fails if BOARD.md is stale
 ```
-The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, model tiers (1.2), the WIP limit and `claimed_at` (5.1, 5.3), `BLOCKED` reasons and entries (5), the Ready for Review entry (3.2), and story points against the sum of task points. It warns about stale claims, `DONE` tickets without a `REVIEW · … · DONE` entry (3.3), and `HANDOVERS.md` rows that target closed tickets.
+The script checks: duplicate IDs, unknown references, Fibonacci points, the Definition of Groomed (3.1, including `codegraph_queries`, `verify_cmd`, and the `GROOMING` entry), missing handover files, prerequisites, model tiers and `tiers.json` (1.2), the WIP limit and `claimed_at` (5.1, 5.3), `BLOCKED` reasons and entries (5), the Ready for Review entry (3.2), and story points against the sum of task points. It warns about stale claims, an in-progress `worker_model` not listed for the ticket's tier, `DONE` tickets without a `REVIEW · … · DONE` entry (3.3), and `HANDOVERS.md` rows that target closed tickets. Entry headers may use `·`, `-`, `|`, or `•` as separators; `ticket.mjs` writes `·`.
+
+The git `pre-commit` hook (`scripts/git-hooks/pre-commit`, enabled with `git config core.hooksPath scripts/git-hooks`) runs the same check on the staged files for every provider. It also rejects a staged change to a `tier_override` or to `tiers.json` unless the user commits with `KANBAN_ALLOW_TIER_EDIT=1`.

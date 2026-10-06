@@ -14,8 +14,9 @@ These are hard lines for every agent, on every provider (protocol section 1.3).
 - Search code before running the ticket's `context.codegraph_queries`, when `.codegraph/` exists.
 - Commit, push, or open PRs without the user's confirmation. Workers never do.
 - Execute a ticket on a model tier other than the ticket's `model`, unless the user approved it for that ticket.
-- Pick a tier by judgment. The standing tier rule decides it: Story or Epic `large`, 1 pt `small`, every other ticket `medium` (protocol section 1.2). Only the user may write a `tier_override`.
-- Groom, review, or update the board as coordinator on a tier below `large`.
+- Pick a tier by judgment. The standing tier rule decides it: Story or Epic `large`, 1 pt `small`, every other ticket `medium` (protocol section 1.2). Only the user may write a `tier_override` or edit `docs/kanban/tiers.json`.
+- Groom, review, or update the board as coordinator on a model not listed for `large` in `docs/kanban/tiers.json`.
+- Pass `ticket.mjs` a `--model` other than the model it really runs on, or set the user switches `KANBAN_INLINE`, `KANBAN_ALLOW_TIER_EDIT`, `KANBAN_DELEGATE`.
 
 **The coordinator MUST NOT:**
 - Execute a ticket itself. It dispatches a worker on the ticket's tier (protocol section 6.3.1), whatever its own model is.
@@ -33,10 +34,11 @@ These are hard lines for every agent, on every provider (protocol section 1.3).
 The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and any other agent that reads `AGENTS.md` run the same steps.
 
 - **Coordinator** (main session, strongest available model): grooms tickets, writes `GROOMING` handovers, dispatches the worker, reviews, talks to the user. It never executes a ticket.
-- **Worker**: executes one groomed ticket with the **Worker Procedure** (protocol section 6.5), on the model that the ticket's tier maps to, one at a time, in the main checkout with no worktree. How to start it on each provider: protocol section 6.3.1.
-  - Claude Code: Agent tool, `subagent_type: "ticket-worker"`, `model` = `haiku` (small), `sonnet` (medium), or `opus` (large). A hook denies other dispatches.
-  - Gemini CLI, Codex, opencode: a subagent or a headless run of the CLI on the tier's model, with the worker prompt from protocol section 6.3.1.
-  - No way to change the model: stop and ask the user to run the worker prompt in a new session on the tier's model. Run it inline only with the user's approval.
+- **Worker**: executes one groomed ticket with the **Worker Procedure** (protocol section 6.5), on a model listed for the ticket's tier in `docs/kanban/tiers.json`, one at a time, in the main checkout with no worktree. How to start it on each provider: protocol section 6.3.1 and [docs/kanban/providers.md](docs/kanban/providers.md).
+  - Claude Code: Agent tool, `subagent_type: "ticket-worker"`, `model` = an alias that resolves to a model listed for the tier (default `haiku` small, `sonnet` medium, `opus` large). A hook denies other dispatches.
+  - Gemini CLI, Codex, opencode, others: a subagent or a headless run of the CLI on a model listed for the tier, with the worker prompt from protocol section 6.3.1.
+  - No way to change the model: stop and ask the user to run the worker prompt in a new session on a listed model. Run it inline only when the user sets `KANBAN_INLINE=<ID>`.
+- **Board commands**: change ticket state only with `node scripts/kanban/ticket.mjs` (`claim`, `handover`, `note`, `review`, `recover`, `show`). It writes canonical handover headers and checks the tier. Never write `board.json` with shell redirects.
 
 ### 1.3. WIP Limit & Escalation
 - At most **one** ticket is `IN_PROGRESS` on the whole board (`wip_limit` in `board.json`). The work is serial by design, so every AI provider can run it in one checkout.
@@ -46,7 +48,7 @@ The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and
 
 ### 1.4. Grooming, Review, Done
 - Fibonacci points (1, 2, 3, 5, 8, 13, 21). 13+ must be split; a Story split into Tasks may total 13+, but each Task stays under 13. Nothing leaves `BACKLOG` without an estimate.
-- `model` is a provider-neutral tier set by the standing tier rule, not chosen: Story or Epic `large` (Claude Opus), 1 pt `small` (Claude Haiku), every other ticket `medium` (Claude Sonnet). Protocol section 1.2 maps tiers to each provider's models. Only the user changes a tier, with `tier_override`.
+- `model` is a provider-neutral tier set by the standing tier rule, not chosen: Story or Epic `large` (Claude Opus), 1 pt `small` (Claude Haiku), every other ticket `medium` (Claude Sonnet). `docs/kanban/tiers.json` lists which model IDs count as each tier in this project. Only the user changes a tier (`tier_override`) or the map (`tiers.json`).
 - A ticket enters `TODO` only when it has `model`, `context` (files, symbols, and codegraph_queries when CodeGraph is installed), `acceptance`, `verify_cmd`, and a `GROOMING` handover entry (protocol section 3.1).
 - A ticket enters `REVIEW` only when `verify_cmd` passes, every `acceptance` item is met, and every `FLAG` on it is addressed in a `PROGRESS · … · REVIEW` entry (protocol section 3.2).
 - A ticket enters `DONE` only after the coordinator reruns `verify_cmd`, checks acceptance against the diff, writes a `REVIEW · … · DONE` entry, and removes its `HANDOVERS.md` rows (protocol section 3.3).
@@ -59,7 +61,7 @@ The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and
 ### 1.6. Board Files
 - `docs/kanban/board.json` is the only source of truth.
 - `docs/kanban/BOARD.md` is generated. After every `board.json` change, run `node scripts/kanban/render-board.mjs`. Never edit `BOARD.md` by hand.
-- **Board first, work second.** Every agent and subagent sets its ticket to `IN_PROGRESS` (with `assignee` and `claimed_at`) and regenerates `BOARD.md` **before** it reads code, edits files, or runs commands for that ticket. Humans must see what agents are working on while the work happens, not after. Every later status change is rendered the moment it happens.
+- **Board first, work second.** Every agent and subagent claims its ticket with `node scripts/kanban/ticket.mjs claim <ID> --worker <name> --model <model-id>` (sets `IN_PROGRESS`, `assignee`, `claimed_at`, `worker_model`, and regenerates `BOARD.md`) **before** it reads code, edits files, or runs commands for that ticket. Humans must see what agents are working on while the work happens, not after. Every later status change is rendered the moment it happens.
 
 ### 1.7. Git & PRs
 - Branches `feature/|fix/|chore/<TICKET-ID>-<slug>`, PRs target `develop`.
@@ -69,6 +71,8 @@ The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and
 
 ## 2. Documentation Catalog
 - docs/kanban/protocol.md — Full governance & knowledge transfer protocol.
+- docs/kanban/providers.md — Running the workflow on any tool or model (Claude Code with LiteLLM/Bedrock, Codex, Gemini, opencode, others), `ticket.mjs` commands, user switches.
+- docs/kanban/tiers.json — Which model IDs count as each tier. User-owned.
 - docs/kanban/board.json — Ticket registry (source of truth). `_ticket_template` shows every field.
 - docs/kanban/BOARD.md — Generated human-readable board.
 - docs/kanban/handovers/ — Handover notes, `_TEMPLATE.md`, and `HANDOVERS.md` (open flags).

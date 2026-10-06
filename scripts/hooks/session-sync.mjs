@@ -8,6 +8,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { TIERS, loadTierModels } from '../kanban/tier-policy.mjs';
 
 const root = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 const out = [];
@@ -29,6 +30,10 @@ if (fs.existsSync(boardFile)) {
     }
     const blocked = tickets.filter((t) => t.status === 'BLOCKED');
     if (blocked.length) out.push(`Blocked tickets (${blocked.length}):`, ...blocked.map((t) => `  ${t.id}: ${t.blocked_reason ?? '(no reason)'}`));
+    // The tier map, so the coordinator knows which models it and its workers may run on (protocol 1.2).
+    const { models, source, problem } = loadTierModels(root);
+    out.push(`Model tiers (${source}${problem ? `, invalid: ${problem}; using defaults` : ''}): ${TIERS.map((k) => `${k} = ${models[k].join(' | ')}`).join('; ')}.`);
+    if (process.env.KANBAN_INLINE) out.push(`KANBAN_INLINE=${process.env.KANBAN_INLINE}: the user lets this session execute those tickets itself (protocol 6.3.1).`);
   } catch {
     out.push('docs/kanban/board.json is not valid JSON. Run: node scripts/kanban/render-board.mjs');
   }

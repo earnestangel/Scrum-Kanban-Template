@@ -12,9 +12,10 @@
     "requires": [],
     "blocks": [],
     "model": "medium",
-      "tier_override": null,
+    "tier_override": null,
     "assignee": null,
     "claimed_at": null,
+    "worker_model": null,
     "blocked_reason": null,
     "context": {
       "files": ["src/path/to/file.ts"],

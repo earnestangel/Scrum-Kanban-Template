@@ -2,9 +2,9 @@
 
 A Scrum Kanban workflow for AI coding agents. A coordinator on a strong model grooms tickets once, with full context. A worker on a cheaper model tier then executes each ticket without rediscovering the code. The board lives in your repository as `docs/kanban/board.json`, validated by a zero-dependency Node script.
 
-The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and other agents that read `AGENTS.md` run the same steps. To make this possible, the board allows **one ticket `IN_PROGRESS` at a time** (WIP 1), in the main checkout. The flow needs no subagents, no worktrees, and no specific model family. Tickets name a model tier (`small`, `medium`, `large`), and each agent maps the tier to its own models.
+The workflow is provider-agnostic. Claude Code, Gemini CLI, Codex, opencode, and other agents that read `AGENTS.md` run the same steps. To make this possible, the board allows **one ticket `IN_PROGRESS` at a time** (WIP 1), in the main checkout. The flow needs no subagents, no worktrees, and no specific model family. Tickets name a model tier (`small`, `medium`, `large`). The project's `docs/kanban/tiers.json`, which you own, lists the model IDs that count as each tier. That can include non-Claude models behind LiteLLM, Bedrock, or another gateway. The tier rule and its protections then hold for any tool and any model.
 
-Rules: [AGENTS.md](AGENTS.md) and [docs/kanban/protocol.md](docs/kanban/protocol.md).
+Rules: [AGENTS.md](AGENTS.md) and [docs/kanban/protocol.md](docs/kanban/protocol.md). Tools and models: [docs/kanban/providers.md](docs/kanban/providers.md).
 
 ## Install
 
@@ -75,6 +75,19 @@ Upgrading from 0.4.x: the coordinator no longer runs tickets inline. It starts a
 
 Upgrading from 0.5.x: tiers follow a standing rule instead of grooming judgment: every Story and Epic is `large`, every 1 pt ticket is `small`, every other ticket is `medium`. `upgrade` re-tiers open tickets that break the rule and lists them; `DONE` and `ABANDONED` tickets keep their history. `render-board.mjs` rejects a ticket that breaks the rule. To give one ticket another tier, add `"tier_override": { "tier": "large", "reason": "..." }` to it yourself; the hook stops agents from writing one. In Claude Code the main session must run Opus to edit `docs/kanban/board.json` or handovers.
 
+Upgrading from 0.6.x: these features are new:
+- **`docs/kanban/tiers.json`.** The tier→model map. It is created with the Claude defaults, so nothing changes until you add models. After that it is yours.
+- **`scripts/kanban/ticket.mjs`.** Board commands for every agent: claim, handover, note, review, recover, show. A claim records `worker_model`.
+- **git `pre-commit` hook.** It runs the board check for every tool. It also rejects agent changes to `tier_override` or `tiers.json`; to commit your own, use `KANBAN_ALLOW_TIER_EDIT=1`. `upgrade` now sets `core.hooksPath` even with `--no-codegraph`.
+
+The Claude Code hook changed in four ways:
+- It checks dispatches and the coordinator against `tiers.json`, after resolving `ANTHROPIC_DEFAULT_*_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`.
+- It checks claims against the agent's real model.
+- It denies shell writes to `board.json`.
+- It replaces most uses of `KANBAN_DELEGATE=off` with the narrower `KANBAN_INLINE=<ID>`.
+
+`render-board.mjs` now accepts `-`, `|`, and `•` as handover header separators. See [providers.md](docs/kanban/providers.md).
+
 ## CodeGraph (optional, recommended)
 
 [CodeGraph](https://github.com/colbymchenry/codegraph) indexes your code so the coordinator can record exact queries during grooming and workers can load the code in one call. Without it, everything still works: hooks turn themselves off and `codegraph_queries` becomes optional in `board.json`.
@@ -104,18 +117,30 @@ Add vendored or generated folders to `exclude` in `codegraph.json`. Check the MC
 |---|---|---|
 | `SessionStart` | `scripts/hooks/session-sync.mjs` | Syncs the CodeGraph index; lists open handover flags. |
 | `UserPromptSubmit` | `scripts/hooks/prompt-context.mjs` | Injects CodeGraph context for the prompt (main session only). Does nothing without an index. |
-| `PreToolUse` (Agent, Edit, Write, NotebookEdit) | `scripts/hooks/worker-delegation.mjs` | Enforces the standing tier rule (Story `large`, 1 pt `small`, else `medium`; only the user writes a `tier_override`). Denies a `ticket-worker` dispatch whose `model` does not match the ticket's tier (`small`→`haiku`, `medium`→`sonnet`, `large`→`opus`), a ticket whose tier breaks the rule, or a worktree. Denies board and handover edits from a main session not on Opus, and agent edits that add or change a `tier_override`. While a ticket is `IN_PROGRESS`, denies main-session edits outside `docs/kanban/` and the `coordinator_paths` globs in `board.json` (for example `["CHANGELOG.md", "docs/adr/**"]`), so the coordinator cannot do the worker's job. Installed with or without CodeGraph. `KANBAN_DELEGATE=off` disables it. |
+| `PreToolUse` (Agent, Edit, Write, NotebookEdit, Bash, PowerShell) | `scripts/hooks/worker-delegation.mjs` | Enforces the standing tier rule (Story `large`, 1 pt `small`, else `medium`) against `docs/kanban/tiers.json`. Works with any model Claude Code runs, including LiteLLM and Bedrock. It denies: a `ticket-worker` dispatch whose model, after resolving `ANTHROPIC_DEFAULT_*_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`, is not listed for the ticket's tier; a ticket whose tier breaks the rule; a worktree; a claim from an agent whose real model (from its transcript) is not listed for the tier; grooming, reviews, and board edits from a main session whose model is not listed for `large`; agent changes to `tier_override` or `tiers.json`; and shell writes to `board.json`. While a ticket is `IN_PROGRESS`, it denies main-session edits outside `docs/kanban/` and the `coordinator_paths` globs in `board.json` (for example `["CHANGELOG.md", "docs/adr/**"]`). Installed with or without CodeGraph. `KANBAN_INLINE=<ID>` lets you approve inline work for one ticket; `KANBAN_DELEGATE=off` disables the hook. |
 | `PreToolUse` (Grep, Glob, Read, Bash, PowerShell) | `scripts/hooks/codegraph-first.mjs` | Denies the first code search per agent (Grep/Glob, whole-file Read of source, shell `grep`/`rg`/`find`/`cat`/`Select-String`) until `codegraph_explore` is used. Ranged Reads always pass. `CODEGRAPH_FIRST=strict` denies until CodeGraph is used; `off` disables. |
 
 ### Git hooks (`scripts/git-hooks/`)
 
+`pre-commit` checks the staged board when `docs/kanban/` changes: it validates it, checks that `BOARD.md` is up to date, and rejects agent changes to `tier_override` or `tiers.json`. It is the one local check that every tool gets, because every tool commits through git. To commit a tier change you made yourself, use `KANBAN_ALLOW_TIER_EDIT=1 git commit ...`.
+
 `post-checkout`, `post-merge`, and `post-rewrite` run `codegraph sync -q` in the background, so the index stays current even when no agent session is open. They exit at once if CodeGraph or the index is missing.
 
-If you use Husky or another hook manager, call them from your own hooks, for example in `.husky/post-merge`:
+If you use Husky or another hook manager, call them from your own hooks, for example in `.husky/pre-commit` and `.husky/post-merge`:
 
 ```sh
+sh scripts/git-hooks/pre-commit
 sh scripts/git-hooks/post-merge "$@"
 ```
+
+### Board commands (`scripts/kanban/ticket.mjs`) and tier map (`docs/kanban/tiers.json`)
+
+Agents claim, hand over, flag, review, and recover tickets with `node scripts/kanban/ticket.mjs <command> <ID> ...`. Each command:
+- writes the canonical handover header;
+- checks the agent's model against `tiers.json`;
+- renders the board, and restores every file it changed if the board does not validate.
+
+`tiers.json` lists which model IDs count as `small`, `medium`, and `large`. Only you edit it. Setup per tool and gateway: [docs/kanban/providers.md](docs/kanban/providers.md).
 
 ### Web board (`scripts/kanban/board-server.mjs`)
 
@@ -136,15 +161,19 @@ Runs `node scripts/kanban/render-board.mjs --check` on changes under `docs/kanba
 | Task | How |
 |---|---|
 | Groom tickets | Coordinator fills the fields in `board.json` (`_ticket_template`) and writes a `GROOMING` entry in `docs/kanban/handovers/<ID>.md`. |
-| Run a ticket | The coordinator starts a worker on the ticket's tier (protocol section 6.3.1): in Claude Code the `ticket-worker` subagent with `model` mapped from the tier; elsewhere a subagent or headless CLI run on the tier's model, or a hand-off to a new session. The coordinator never executes a ticket itself. Only one ticket runs at a time. |
-| Handle a blocker | Worker sets `BLOCKED` with a `blocked_reason` and a `PROGRESS · … · BLOCKED` entry, then stops. That frees the WIP slot. Coordinator resolves it or asks you. |
-| Recover a dead worker | At session start the coordinator checks for an `IN_PROGRESS` claim it did not make, asks you, then records leftover edits and sets `PAUSED` (protocol section 5.3). |
-| Review and close | Coordinator reruns `verify_cmd`, checks acceptance, writes a `REVIEW · … · DONE` or `REWORK` entry (protocol sections 3.2–3.3). |
+| Run a ticket | The coordinator starts a worker on a model listed for the ticket's tier (protocol section 6.3.1): in Claude Code the `ticket-worker` subagent; elsewhere a subagent or headless CLI run, or a hand-off to a new session. The worker claims with `ticket.mjs claim`. The coordinator never executes a ticket itself. Only one ticket runs at a time. |
+| Use another model or tool | List its model IDs in `docs/kanban/tiers.json` (you edit it; agents cannot). See [providers.md](docs/kanban/providers.md). |
+| Resume a ticket on another model | `ticket.mjs claim` on any model listed for the tier. For a one-off mismatch, start the session with `KANBAN_INLINE=<ID>` (providers.md section 10). |
+| Handle a blocker | Worker runs `ticket.mjs handover <ID> --status BLOCKED --reason ...`, then stops. That frees the WIP slot. Coordinator resolves it or asks you. |
+| Recover a dead worker | At session start the coordinator checks for an `IN_PROGRESS` claim it did not make, asks you, then runs `ticket.mjs recover` (protocol section 5.3). |
+| Review and close | Coordinator reruns `verify_cmd`, checks acceptance, runs `ticket.mjs review <ID> --outcome DONE\|REWORK` (protocol sections 3.2–3.3). |
 | Regenerate the board | `node scripts/kanban/render-board.mjs` |
 | Validate the board (CI) | `node scripts/kanban/render-board.mjs --check` |
 | Open the web board | `node scripts/kanban/board-server.mjs --open` |
 
 ## Contributing
+
+Run the tests (Node's built-in runner, no dependencies): `npm test`. They are not shipped to installed projects.
 
 Run the installer against a scratch repository to test changes:
 
