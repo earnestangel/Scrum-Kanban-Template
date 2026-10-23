@@ -21,6 +21,10 @@ export const policyTier = (t) => (t.type === 'story' || t.type === 'epic' ? 'lar
 
 export const requiredTier = (t) => t.tier_override?.tier ?? policyTier(t);
 
+// Standing exception (protocol 6.3.1): the coordinator may run a 1 point chore itself, on its large-tier
+// model, recorded with ticket.mjs claim and handover like any other ticket.
+export const coordinatorMayRun = (t) => t.type === 'chore' && t.points === 1;
+
 // Returns why the ticket breaks the tier rule, or null. Closed tickets are history and are not checked.
 export function tierProblem(t) {
   if (['DONE', 'ABANDONED'].includes(t.status)) return null;

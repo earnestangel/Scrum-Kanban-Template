@@ -7,12 +7,12 @@
 //   tier follows the standing tier rule (scripts/kanban/tier-policy.mjs), no worktree, and the model the
 //   dispatch really runs on fits the ticket's tier. The Agent `model` alias is resolved through
 //   CLAUDE_CODE_SUBAGENT_MODEL and ANTHROPIC_DEFAULT_<ALIAS>_MODEL before the check.
-// - board.json, handovers/, tiers.json (Edit/Write/MultiEdit/NotebookEdit, and shell writes):
-//   - nobody adds, changes, or removes a "tier_override", or writes tiers.json; only the user does;
-//   - a claim (status → IN_PROGRESS) needs the real model of the claiming agent to fit the ticket's tier;
-//   - only a main session on the large tier (the coordinator) grooms, closes (DONE), or sends back (REWORK);
-//   - board edits go through scripts/kanban/ticket.mjs or Edit/Write, not through shell redirects.
-// - ticket.mjs calls: --model must be the model the calling agent really runs on.
+// - board.json, BOARD.md, handovers/, .script-writes.json: no agent edits them by hand, whatever its
+//   model or role (Edit/Write/MultiEdit/NotebookEdit, and shell writes). Every change goes through
+//   scripts/kanban/ticket.mjs, which stamps it (protocol 6.1). tiers.json: only the user edits it.
+// - ticket.mjs calls: --model must be the model the calling agent really runs on; coordinator commands
+//   (create, groom, edit, status, GROOMING notes, review, recover) need a main session on the large tier;
+//   the coordinator claims only a 1 point chore (protocol 6.3.1).
 // - While a ticket is IN_PROGRESS, project files belong to its worker. The main session may edit
 //   docs/kanban/, the board.json "coordinator_paths" globs, and files outside the repository.
 //
@@ -22,10 +22,9 @@
 //                                     allow grooming, review, tier_override, or tiers.json changes.
 //   KANBAN_DELEGATE=off               disables this hook.
 
-import fs from 'node:fs';
 import path from 'node:path';
-import { BOARD_FILE, loadBoard, tickets as flatten } from '../kanban/board-lib.mjs';
-import { TIERS_FILE, aliasForTier, loadTierModels, modelFitsTier, requiredTier, resolveClaudeAlias, tierProblem, tiersOfModel } from '../kanban/tier-policy.mjs';
+import { BOARD_FILE, BOARD_MD, HANDOVER_DIR, SCRIPT_WRITES_FILE, loadBoard, tickets as flatten } from '../kanban/board-lib.mjs';
+import { TIERS_FILE, aliasForTier, coordinatorMayRun, loadTierModels, modelFitsTier, requiredTier, resolveClaudeAlias, tierProblem, tiersOfModel } from '../kanban/tier-policy.mjs';
 import { agentTranscript, allowWithNote, deny, lastModel, readEvent } from './hook-lib.mjs';
 
 if (process.env.KANBAN_DELEGATE === 'off') process.exit(0);
@@ -60,6 +59,17 @@ const whoAmI = isSub ? `the ${event.agent_type ?? 'ticket-worker'} subagent (${a
 const notCoordinator = () =>
   `Coordinator work (grooming, board updates, reviews) needs the large tier: a model listed for "large" in ${tierSource} (${listed('large')}). ` +
   `${whoAmI} is not. Ask the user to switch with /model ${largeAlias}, or to add this model to "large" in ${TIERS_FILE} (protocol 1.1, 1.2).`;
+// Board files no agent edits by hand: [shell pattern, repository path, the ticket.mjs commands to use].
+const BOARD_PATHS = [
+  ['board\\.json', BOARD_FILE, 'create, groom, and edit for fields, status for coordinator moves, claim and handover for workers'],
+  ['BOARD\\.md', BOARD_MD, 'every command renders it; render-board.mjs regenerates it'],
+  // _TEMPLATE.md is template-owned text, not board data.
+  ['handovers[\\\\/](?!_TEMPLATE\\.md)', `${HANDOVER_DIR}/`,'note --type GROOMING or FLAG, handover, review; fix a grooming entry with note --type GROOMING --edit <n> | --delete <n> --reason <text>'],
+  ['\\.script-writes\\.json', SCRIPT_WRITES_FILE, 'ticket.mjs records it'],
+];
+const handEdit = (rel) =>
+  `Nobody edits ${rel} by hand (protocol 6.1). Use node scripts/kanban/ticket.mjs: ${BOARD_PATHS.find(([, r]) => r === rel)[2]}. ` +
+  'It stamps every change with the time, agent, role, model, and tier. Run it without arguments for the usage.';
 
 // ---------- worker dispatch ----------
 if (tool === 'Agent' || tool === 'Task') {
@@ -98,8 +108,8 @@ if (tool === 'Agent' || tool === 'Task') {
 // ---------- shell: board writes and ticket.mjs calls ----------
 if (tool === 'Bash' || tool === 'PowerShell') {
   const cmd = String(ti.command ?? '');
-  // Heuristic: a shell command that writes into board.json, tiers.json, or a handover note. Reads, and
-  // copies that only read them (cp board.json /tmp/x), pass. ticket.mjs and render-board.mjs pass.
+  // Heuristic: a shell command that writes into a board file or tiers.json. Reads, and copies that only
+  // read them (cp board.json /tmp/x), pass. ticket.mjs and render-board.mjs pass.
   const target = (p) => `["']?[^\\s"']*docs[\\\\/]kanban[\\\\/]${p}`;
   const writesInto = (p) =>
     new RegExp(
@@ -113,25 +123,25 @@ if (tool === 'Bash' || tool === 'PowerShell') {
   for (const seg of cmd.split(/&&|\|\|?|;|\n/)) {
     if (VIA_SCRIPTS.test(seg)) continue;
     if (writesInto('tiers\\.json').test(seg)) deny(`Only the user edits ${TIERS_FILE} (protocol 1.2). Tell the user which model you propose for which tier, and why.`);
-    if (writesInto('board\\.json').test(seg)) {
-      deny('Change board.json with node scripts/kanban/ticket.mjs (claim, handover, note, review, recover) or with Edit/Write, not with shell writes; the hooks cannot check those (protocol 6.1).');
-    }
-    if (!isSub && !isCoordinator && !inline.size && writesInto('handovers[\\\\/]').test(seg)) deny(notCoordinator());
+    for (const [p, rel] of BOARD_PATHS) if (writesInto(p).test(seg)) deny(handEdit(rel));
   }
   // Model IDs differ by prefix between tools and gateways ("bedrock/global.openai.gpt-6-luna" vs "gpt-6-luna").
   const same = (a, b) => {
     const [x, y] = [a.toLowerCase(), b.toLowerCase()];
     return x.includes(y) || y.includes(x);
   };
-  for (const m of cmd.matchAll(/ticket\.mjs["']?\s+(\w+)\s+([A-Za-z]+-\d+)([^;&|\n]*)/g)) {
+  // The second word is a ticket ID, or the type for "create <type>".
+  for (const m of cmd.matchAll(/ticket\.mjs["']?\s+(\w+)\s+([A-Za-z]+(?:-\d+)?)([^;&|\n]*)/g)) {
     const [, sub, id, args] = m;
     const given = args.match(/--model[=\s]+["']?([^"'\s]+)/)?.[1];
     if (given && actorModel && !same(given, actorModel)) {
       deny(`ticket.mjs --model must be the model you run on. The transcript shows ${actorModel}, not ${given}. Run it again with --model "${actorModel}".`);
     }
-    const coordinatorOnly = sub === 'review' || sub === 'recover' || (sub === 'note' && /--type[=\s]+["']?grooming/i.test(args));
+    const coordinatorOnly = ['create', 'groom', 'edit', 'status', 'review', 'recover'].includes(sub) || (sub === 'note' && /--type[=\s]+["']?grooming/i.test(args));
     if (coordinatorOnly && (isSub || !isCoordinator)) deny(isSub ? `${sub} is coordinator work; a subagent never runs it (protocol 1.1, 6.5).` : notCoordinator());
-    if (sub === 'claim' && !isSub && !inline.has(id)) {
+    // Standing exception: the coordinator may run a 1 point chore itself (protocol 6.3.1).
+    const ownChore = byId.has(id) && coordinatorMayRun(byId.get(id)) && isCoordinator;
+    if (sub === 'claim' && !isSub && !inline.has(id) && !ownChore) {
       deny(`The coordinator never executes a ticket. Dispatch ticket-worker for ${id} (protocol 6.3.1). To run it in this session, the user sets KANBAN_INLINE=${id}.`);
     }
     if (sub === 'handover' && !isSub && !isCoordinator && !inline.has(id)) deny(notCoordinator());
@@ -152,58 +162,14 @@ if (is(`^${TIERS_FILE.replace(/\./g, '\\.')}$`)) {
   deny(`Only the user edits ${TIERS_FILE} (protocol 1.2). Tell the user which model you propose for which tier, and why.`);
 }
 
-if (is(`^${BOARD_FILE.replace(/\./g, '\\.')}$`)) {
-  const before = fs.readFileSync(path.join(root, rel), 'utf8');
-  const edits = tool === 'MultiEdit' ? (ti.edits ?? []) : [ti];
-  const after =
-    tool === 'Write'
-      ? (ti.content ?? '')
-      : edits.reduce((text, e) => (e.replace_all ? text.split(e.old_string).join(e.new_string) : text.replace(e.old_string, () => e.new_string)), before);
-  const parse = (text) => {
-    try {
-      return new Map(flatten(JSON.parse(text)).map((t) => [t.id, t]));
-    } catch {
-      return null; // Invalid JSON: render-board.mjs reports it.
-    }
-  };
-  const [b, a] = [parse(before), parse(after)];
-  if (!b || !a) {
-    if (!isSub && !isCoordinator && !inline.size) deny(notCoordinator());
-    process.exit(0);
-  }
-  const changed = [...new Set([...b.keys(), ...a.keys()])].filter((id) => JSON.stringify(b.get(id)) !== JSON.stringify(a.get(id)));
-  for (const id of changed) {
-    const [o, n] = [b.get(id), a.get(id)];
-    if (JSON.stringify(o?.tier_override ?? null) !== JSON.stringify(n?.tier_override ?? null)) {
-      deny('Only the user sets "tier_override" in board.json (protocol 1.2). Tell the user which ticket and tier you propose and why; they edit board.json themselves.');
-    }
-    if (!n) continue;
-    const tier = requiredTier(n);
-    if (n.status === 'IN_PROGRESS' && o?.status !== 'IN_PROGRESS') {
-      if (!isSub && !inline.has(id)) {
-        deny(`The coordinator never executes a ticket. Dispatch ticket-worker for ${id} (protocol 6.3.1). To run it in this session, the user sets KANBAN_INLINE=${id}.`);
-      }
-      if (actorModel && !fits(actorModel, tier) && !inline.has(id)) {
-        deny(`${id} is tier "${tier}" (${listed(tier)} in ${tierSource}), but ${whoAmI} is not listed for it. Stop and report the mismatch; only the user may approve it (protocol 1.2, 6.3.1).`);
-      }
-    }
-    const closes = (n.status === 'DONE' && o?.status !== 'DONE') || (o?.status === 'REVIEW' && n.status === 'TODO');
-    if (closes && (isSub || !isCoordinator)) deny(isSub ? `Closing ${id} (DONE or REWORK) is coordinator review; a worker stops at REVIEW (protocol 3.3, 6.5).` : notCoordinator());
-    if (!isSub && !isCoordinator && !inline.has(id)) deny(notCoordinator());
-  }
-  process.exit(0);
-}
-
-if (is('^docs/kanban/handovers/')) {
-  const id = rel.match(/handovers\/([A-Za-z]+-\d+)\.md$/i)?.[1];
-  if (!isSub && !isCoordinator && !(id ? inline.has(id) : inline.size)) deny(notCoordinator());
-  process.exit(0);
-}
+const boardFile = BOARD_PATHS.find(([, r]) => is(`^${r.replace(/\./g, '\\.')}${r.endsWith('/') ? '(?!_TEMPLATE\\.md$)' : '$'}`));
+if (boardFile) deny(handEdit(boardFile[1]));
 
 if (!active.length) process.exit(0);
 if (isWorker) process.exit(0);
 const t = active[0];
 if (!isSub && inline.has(t.id)) process.exit(0);
+if (!isSub && isCoordinator && coordinatorMayRun(t)) process.exit(0);
 
 // Coordinator paths: docs/kanban/ plus the project's "coordinator_paths" globs. "**" spans directories,
 // "*" and "?" stay inside one, and a pattern ending in "/" covers everything below that directory.

@@ -7,6 +7,8 @@
 // 2. No staged change adds, changes, or removes a "tier_override", or changes docs/kanban/tiers.json,
 //    unless the user commits with KANBAN_ALLOW_TIER_EDIT=1. Those are the user's decisions (protocol 1.2);
 //    agents never set this variable.
+// 3. Every staged board.json and handover note is what scripts/kanban/ticket.mjs last wrote (a hash in
+//    docs/kanban/.script-writes.json), unless the user commits with KANBAN_ALLOW_MANUAL_EDIT=1.
 //
 // The check reads only staged content, so it is safe to run from any directory inside the repository.
 
@@ -14,7 +16,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BOARD_FILE, tickets } from './board-lib.mjs';
+import { BOARD_FILE, HANDOVER_DIR, contentHash, isGuarded, loadScriptWrites, tickets } from './board-lib.mjs';
 import { TIERS_FILE } from './tier-policy.mjs';
 
 const git = (...args) => spawnSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -71,6 +73,26 @@ if (process.env.KANBAN_ALLOW_TIER_EDIT !== '1') {
   }
   if (tierProblems.length) {
     problems.push(...tierProblems, 'If you are the user and made this change yourself, commit with KANBAN_ALLOW_TIER_EDIT=1 (agents never set it).');
+  }
+}
+
+// 3. Script-only board files (protocol 6.1). Every staged board.json and handover note must be content that
+//    ticket.mjs (or the installer) wrote, as recorded in .script-writes.json, unless the user commits with
+//    KANBAN_ALLOW_MANUAL_EDIT=1. Agents never set it.
+if (process.env.KANBAN_ALLOW_MANUAL_EDIT !== '1') {
+  const record = loadScriptWrites(root);
+  const manual = [];
+  for (const line of git('-C', root, 'diff', '--cached', '--name-status', '--no-renames', '--', BOARD_FILE, HANDOVER_DIR).stdout.split('\n')) {
+    const [st, rel] = line.split('\t');
+    if (!rel || !isGuarded(rel)) continue;
+    if (st === 'D') manual.push(`${rel} (deleted)`);
+    else if (record[rel] !== contentHash(staged(rel) ?? '')) manual.push(rel);
+  }
+  if (manual.length) {
+    problems.push(
+      `staged board files that scripts/kanban/ticket.mjs did not write, or that changed after its last write:\n  ${manual.join('\n  ')}\n` +
+        'Make the change with ticket.mjs instead (protocol 6.1). If you are the user and edited them on purpose, commit with KANBAN_ALLOW_MANUAL_EDIT=1 (agents never set it).',
+    );
   }
 }
 
