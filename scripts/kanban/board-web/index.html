@@ -97,6 +97,7 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 .card.sel { outline: 2px solid var(--accent); }
 .card-title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; overflow-wrap: anywhere; }
 .card-reason { font-size: 12px; color: var(--danger); background: var(--danger-bg); border-radius: 4px; padding: 4px 6px; margin-bottom: 6px; }
+.card-meta { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .tags:empty { display: none; }
 .tag { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; background: var(--grey-bg); color: var(--muted); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -173,7 +174,8 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 18px 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--col); border-left: 4px solid var(--ec); font-size: 13px; }
 .entry-head .etype { font-weight: 700; color: var(--ec); letter-spacing: .03em; }
 .entry-head .edate { color: var(--muted); }
-.e-grooming { --ec: var(--info); } .e-progress { --ec: var(--warn); } .e-review { --ec: var(--ok); } .e-flag { --ec: var(--danger); }
+.e-grooming { --ec: var(--info); } .e-progress { --ec: var(--warn); } .e-review { --ec: var(--ok); } .e-flag { --ec: var(--danger); } .e-amend { --ec: var(--purple); }
+.st-EDITED, .st-DELETED { background: var(--purple-bg); color: var(--purple); }
 .note-src { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
 .note-src + .md { margin-bottom: 28px; }
 
@@ -204,6 +206,12 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   <select id="f-epic" aria-label="Epic"></select>
   <select id="f-type" aria-label="Type"></select>
   <select id="f-who" aria-label="Assignee"></select>
+  <select id="f-actor" aria-label="Last actor"></select>
+  <select id="f-role" aria-label="Last actor role"></select>
+  <select id="f-model" aria-label="Last actor model"></select>
+  <select id="f-tier" aria-label="Last actor tier"></select>
+  <select id="sort" aria-label="Sort cards in each column"></select>
+  <button class="btn" id="dir" aria-label="Sort direction"></button>
   <label class="chk"><input type="checkbox" id="f-notes"> Has handover</label>
   <label class="chk"><input type="checkbox" id="f-abandoned"> Show abandoned</label>
   <button class="btn" id="clear" title="Clear filters">Clear</button>
@@ -220,7 +228,9 @@ const LABEL = { BACKLOG: 'Backlog', TODO: 'To Do', IN_PROGRESS: 'In Progress', P
 const COLOR = { BACKLOG: 'var(--muted)', TODO: 'var(--muted)', IN_PROGRESS: 'var(--info)', PAUSED: 'var(--warn)', BLOCKED: 'var(--danger)', REVIEW: 'var(--purple)', DONE: 'var(--ok)', ABANDONED: 'var(--border)' };
 // Same group-to-type mapping as scripts/kanban/render-board.mjs.
 const GROUPS = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
-const KNOWN = ['id', 'title', 'status', 'type', 'points', 'parent', 'children', 'requires', 'blocks', 'model', 'assignee', 'claimed_at', 'blocked_reason', 'context', 'acceptance', 'verify_cmd', 'handovers'];
+const KNOWN = ['id', 'title', 'description', 'status', 'type', 'points', 'parent', 'children', 'requires', 'blocks', 'model', 'assignee', 'claimed_at', 'worker_model', 'blocked_reason', 'context', 'acceptance', 'verify_cmd', 'handovers', 'created_at', 'updated_at', 'last_actor', 'claims'];
+// Card order within a column. Tickets without the value sort last in both directions.
+const SORTS = { '': 'Board order', updated: 'Last change', created: 'Created', claimed: 'Claimed', id: 'ID', points: 'Points' };
 const STALE_CLAIM_HOURS = 24;
 const ICON = {
   epic: '<path d="M9.5 1 3 9h4.5L6.5 15 13 7H8.5z" fill="currentColor"/>',
@@ -233,7 +243,11 @@ const ICON = {
 const NOTE_SVG = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9 1.5V5.5h4M6 8.5h5M6 11h4"/></svg>';
 
 const S = { board: null, all: [], byId: new Map(), raw: new Map(), notes: new Set(), flags: [], project: '', open: null, tab: 'details', noteCache: new Map() };
-const F = { q: '', epic: '', type: '', who: '', notes: false, abandoned: false };
+const F0 = { q: '', epic: '', type: '', who: '', actor: '', role: '', model: '', tier: '', sort: '', dir: 'desc', notes: false, abandoned: false };
+const F = { ...F0 };
+const FILTER_KEYS = ['q', 'epic', 'type', 'who', 'actor', 'role', 'model', 'tier', 'sort'];
+// Filters on the last actor: the select id, the last_actor field, and the "all" label.
+const ACTOR_FILTERS = [['actor', 'name', 'Any last actor'], ['role', 'role', 'Any role'], ['model', 'model', 'Any model'], ['tier', 'tier', 'Any tier']];
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -319,7 +333,23 @@ function matches(t) {
   if (F.type && t.type !== F.type) return false;
   if (F.who && (F.who === '-' ? t.assignee : t.assignee !== F.who)) return false;
   if (F.notes && !noteIds(t).length) return false;
+  for (const [k, field] of ACTOR_FILTERS) if (F[k] && (F[k] === '-' ? t.last_actor?.[field] : t.last_actor?.[field] !== F[k])) return false;
   return true;
+}
+
+const lastClaimAt = (t) => t.claimed_at ?? (Array.isArray(t.claims) ? t.claims.at(-1)?.claimed_at : null) ?? null;
+const SORT_KEY = {
+  updated: (t) => Date.parse(t.updated_at ?? ''),
+  created: (t) => Date.parse(t.created_at ?? ''),
+  claimed: (t) => Date.parse(lastClaimAt(t) ?? ''),
+  points: (t) => (t.points === null || t.points === undefined || t.points === '' ? NaN : Number(t.points)),
+};
+function bySort(a, b) {
+  const sign = F.dir === 'asc' ? 1 : -1;
+  if (F.sort === 'id') return sign * String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+  const [x, y] = [SORT_KEY[F.sort](a), SORT_KEY[F.sort](b)];
+  if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) - Number.isNaN(y);
+  return sign * (x - y);
 }
 
 // ---------- small views ----------
@@ -344,6 +374,11 @@ function ago(iso) {
   const v = Math.max(0, Math.floor(n));
   return `${v} ${u}${v === 1 ? '' : 's'} ago`;
 }
+// "name (role · tier · model)" for a last_actor or a claim-like record.
+const actorText = (a) => (a ? `${a.name ?? a.worker ?? '?'} (${[a.role, a.tier, a.model].filter(Boolean).join(' · ')})` : '—');
+// Relative time, with the local date and time on hover; "—" when the ticket has no stamp yet.
+const when = (iso) => (iso && !Number.isNaN(Date.parse(iso)) ? `<span title="${esc(fmtDate(iso))}">${esc(ago(iso))}</span>` : '<span class="muted">—</span>');
+const whenFull = (iso) => (iso && !Number.isNaN(Date.parse(iso)) ? `${esc(fmtDate(iso))} <span class="muted">(${esc(ago(iso))})</span>` : '<span class="muted">—</span>');
 function banner(msg) {
   const b = $('#banner');
   b.textContent = msg;
@@ -384,6 +419,16 @@ function renderFilterOptions() {
   $('#f-epic').innerHTML = opts('All epics', [...epics.map((e) => [e.id, `${e.id} · ${e.title ?? ''}`]), ['-', 'No epic']]);
   $('#f-type').innerHTML = opts('All types', types.map((t) => [t, cap(t)]));
   $('#f-who').innerHTML = opts('Anyone', [...who.map((w) => [w, w]), ['-', 'Unassigned']]);
+  for (const [k, field, all] of ACTOR_FILTERS) {
+    const values = uniq(S.all.map((t) => t.last_actor?.[field]).filter(Boolean)).sort();
+    $(`#f-${k}`).innerHTML = opts(all, [...values.map((v) => [v, k === 'role' || k === 'tier' ? cap(v) : v]), ['-', 'Not recorded']]);
+    $(`#f-${k}`).value = F[k];
+  }
+  $('#sort').innerHTML = Object.entries(SORTS).map(([v, l]) => `<option value="${esc(v)}">Sort: ${esc(l)}</option>`).join('');
+  $('#sort').value = F.sort;
+  $('#dir').textContent = F.dir === 'asc' ? '↑' : '↓';
+  $('#dir').title = F.dir === 'asc' ? 'Ascending (oldest or lowest first)' : 'Descending (newest or highest first)';
+  $('#dir').disabled = !F.sort;
   $('#f-epic').value = F.epic; $('#f-type').value = F.type; $('#f-who').value = F.who;
   $('#q').value = F.q; $('#f-notes').checked = F.notes; $('#f-abandoned').checked = F.abandoned;
 }
@@ -414,6 +459,7 @@ function renderBoard() {
   $('#board').innerHTML = cols.map((s) => {
     const inCol = S.all.filter((t) => workable(t) && t.status === s);
     const shown = inCol.filter(matches);
+    if (F.sort) shown.sort(bySort);
     const pts = shown.reduce((n, t) => n + (Number(t.points) || 0), 0);
     const count = s === 'IN_PROGRESS' ? `${inCol.length}/${wip}` : shown.length;
     const bad = s === 'IN_PROGRESS' && inCol.length > wip;
@@ -439,6 +485,7 @@ function card(t) {
   return `<div class="card ${S.open === t.id ? 'sel' : ''}" role="button" tabindex="0" data-open="${esc(t.id)}">
     <div class="card-title">${esc(t.title ?? '(untitled)')}</div>
     ${t.status === 'BLOCKED' && t.blocked_reason ? `<div class="card-reason">${esc(t.blocked_reason)}</div>` : ''}
+    <div class="card-meta" title="Last change and last actor">${when(t.updated_at)} · ${esc(actorText(t.last_actor))}</div>
     <div class="tags">${tags}</div>
     <div class="card-foot">
       ${typeIcon(t.type)}<span class="card-id ${t.status === 'DONE' ? 'done' : ''}">${esc(t.id)}</span>
@@ -503,11 +550,16 @@ function details(t) {
       <dt>Status</dt><dd>${statusPill(t.status)}${wait.length && !['DONE', 'ABANDONED'].includes(t.status) ? `<span class="tag bad">waits on ${esc(wait.join(', '))}</span>` : ''}</dd>
       <dt>Points</dt><dd><span class="pts">${esc(t.points ?? '–')}</span>${p && p.total ? `<span class="muted">${p.done}/${p.total} pts of children done</span>` : ''}</dd>
       <dt>Assignee</dt><dd>${avatar(t.assignee)}<span>${esc(t.assignee ?? 'Unassigned')}</span></dd>
-      <dt>Claimed</dt><dd>${t.claimed_at ? `${esc(fmtDate(t.claimed_at))} <span class="muted">(${esc(ago(t.claimed_at))})</span>` : '<span class="muted">—</span>'}</dd>
-      <dt>Model tier</dt><dd>${t.model ? `<span class="model">${esc(t.model)}</span>` : '<span class="muted">—</span>'}</dd>
+      <dt>Claimed</dt><dd>${whenFull(t.claimed_at)}</dd>
+      <dt>Created</dt><dd>${whenFull(t.created_at)}</dd>
+      <dt>Last change</dt><dd>${whenFull(t.updated_at)}</dd>
+      <dt>Last actor</dt><dd>${t.last_actor ? `${avatar(t.last_actor.name)}<span>${esc(actorText(t.last_actor))}</span>` : '<span class="muted">—</span>'}</dd>
+      <dt>Model tier</dt><dd>${t.model ? `<span class="model">${esc(t.model)}</span>` : '<span class="muted">—</span>'}${t.worker_model ? `<span class="muted">worker runs ${esc(t.worker_model)}</span>` : ''}</dd>
       <dt>Epic</dt><dd>${e && e !== t ? `${epicPill(e)} <a href="#" data-open="${esc(e.id)}">${esc(e.id)}</a>` : '<span class="muted">—</span>'}</dd>
       <dt>Parent</dt><dd>${t.parent ? relList([t.parent]) : '<span class="muted">—</span>'}</dd>
     </dl></div>
+    ${t.description ? `<div class="sec"><h3>Description</h3><div class="md">${markdown(t.description)}</div></div>` : ''}
+    ${claimsView(t)}
     ${t.type === 'epic' ? `<div class="sec"><h3>Tickets in this epic (${descendants.length})</h3>${relList(descendants)}</div>` : ''}
     ${kids.length ? `<div class="sec"><h3>Children</h3>${relList(kids)}</div>` : ''}
     <div class="sec"><h3>Dependencies</h3><dl class="grid">
@@ -522,6 +574,15 @@ function details(t) {
       ? `<a class="chip" href="#" data-note="${esc(h)}">${esc(h)}.md</a>` : `<span class="chip" title="File missing">${esc(h)}.md (missing)</span>`).join('')}</div>` : '<span class="muted">—</span>'}</div>
     ${other.length ? `<div class="sec"><h3>Other fields</h3><dl class="grid">${other.map((k) => `<dt>${esc(k)}</dt><dd>${valueView(S.raw.get(t.id)[k])}</dd>`).join('')}</dl></div>` : ''}
     <details class="raw"><summary>Raw board.json record</summary><pre>${esc(JSON.stringify(S.raw.get(t.id), null, 2))}</pre></details>`;
+}
+
+function claimsView(t) {
+  const claims = Array.isArray(t.claims) ? t.claims : [];
+  if (!claims.length) return '';
+  const rows = [...claims].reverse().map((c) => `<tr><td>${esc(c.worker ?? '?')}</td><td>${esc([c.tier, c.model].filter(Boolean).join(' · ') || '—')}</td>
+    <td>${when(c.claimed_at)}</td><td>${c.released_at ? when(c.released_at) : '<span class="st st-IN_PROGRESS">open</span>'}</td><td>${c.outcome ? statusPill(c.outcome) : ''}</td></tr>`).join('');
+  return `<div class="sec"><h3>Claims (${claims.length}, newest first)</h3><div class="md"><table>
+    <thead><tr><th>Worker</th><th>Tier · model</th><th>Claimed</th><th>Released</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 async function renderNotes(t, ids) {
@@ -553,12 +614,12 @@ function inline(src) {
 }
 
 function entryHead(text) {
-  const m = text.match(/^(GROOMING|PROGRESS|REVIEW|FLAG)\b\s*·?\s*(.*)$/);
+  const m = text.match(/^(GROOMING|PROGRESS|REVIEW|FLAG|AMEND)\b(\s*\(DELETED\))?\s*·?\s*(.*)$/);
   if (!m) return null;
-  const parts = m[2].split('·').map((x) => x.trim()).filter(Boolean);
-  const status = m[1] !== 'FLAG' && /^(PAUSED|BLOCKED|REVIEW|ABANDONED|DONE|REWORK)$/.test(parts.at(-1) ?? '') ? parts.pop() : null;
+  const parts = m[3].split('·').map((x) => x.trim()).filter(Boolean);
+  const status = m[1] !== 'FLAG' && /^(PAUSED|BLOCKED|REVIEW|ABANDONED|DONE|REWORK|EDITED|DELETED|BACKLOG|TODO)$/.test(parts.at(-1) ?? '') ? parts.pop() : null;
   const [date, ...rest] = parts;
-  return `<div class="entry-head e-${m[1].toLowerCase()}"><span class="etype">${m[1]}</span>${date ? `<span class="edate" title="${esc(date)}">${esc(fmtDate(date))}</span>` : ''}<span>${inline(rest.join(' · '))}</span><span class="spacer"></span>${status ? statusPill(status) : ''}</div>`;
+  return `<div class="entry-head e-${m[1].toLowerCase()}"><span class="etype">${m[1]}${m[2] ? ' (deleted)' : ''}</span>${date ? `<span class="edate" title="${esc(date)}">${esc(fmtDate(date))}</span>` : ''}<span>${inline(rest.join(' · '))}</span><span class="spacer"></span>${status ? statusPill(status) : ''}</div>`;
 }
 
 function markdown(src) {
@@ -623,13 +684,16 @@ function markdown(src) {
 // ---------- URL hash state: filters and the open ticket are shareable links ----------
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
-  F.q = p.get('q') ?? ''; F.epic = p.get('epic') ?? ''; F.type = p.get('type') ?? ''; F.who = p.get('who') ?? '';
+  for (const k of FILTER_KEYS) F[k] = p.get(k) ?? '';
+  if (!SORTS[F.sort]) F.sort = '';
+  F.dir = p.get('dir') === 'asc' ? 'asc' : 'desc';
   F.notes = p.has('notes'); F.abandoned = p.has('abandoned');
   S.open = p.get('ticket'); S.tab = p.get('tab') === 'handover' ? 'handover' : 'details';
 }
 function hashFor(open = S.open, tab = S.tab) {
   const p = new URLSearchParams();
-  for (const k of ['q', 'epic', 'type', 'who']) if (F[k]) p.set(k, F[k]);
+  for (const k of FILTER_KEYS) if (F[k]) p.set(k, F[k]);
+  if (F.sort && F.dir === 'asc') p.set('dir', 'asc');
   if (F.notes) p.set('notes', '');
   if (F.abandoned) p.set('abandoned', '');
   if (open) { p.set('ticket', open); if (tab === 'handover') p.set('tab', 'handover'); }
@@ -644,9 +708,12 @@ $('#q').addEventListener('input', (e) => { F.q = e.target.value; saveFilters(); 
 $('#f-epic').addEventListener('change', (e) => { F.epic = e.target.value; saveFilters(); });
 $('#f-type').addEventListener('change', (e) => { F.type = e.target.value; saveFilters(); });
 $('#f-who').addEventListener('change', (e) => { F.who = e.target.value; saveFilters(); });
+for (const [k] of ACTOR_FILTERS) $(`#f-${k}`).addEventListener('change', (e) => { F[k] = e.target.value; saveFilters(); });
+$('#sort').addEventListener('change', (e) => { F.sort = e.target.value; renderFilterOptions(); saveFilters(); });
+$('#dir').addEventListener('click', () => { F.dir = F.dir === 'asc' ? 'desc' : 'asc'; renderFilterOptions(); saveFilters(); });
 $('#f-notes').addEventListener('change', (e) => { F.notes = e.target.checked; saveFilters(); });
 $('#f-abandoned').addEventListener('change', (e) => { F.abandoned = e.target.checked; saveFilters(); });
-$('#clear').addEventListener('click', () => { Object.assign(F, { q: '', epic: '', type: '', who: '', notes: false, abandoned: false }); renderFilterOptions(); saveFilters(); });
+$('#clear').addEventListener('click', () => { Object.assign(F, F0); renderFilterOptions(); saveFilters(); });
 
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-open],[data-epic],[data-close],[data-tab],[data-note],[data-copy]');

@@ -1,9 +1,10 @@
 # Handover Notes: [TICKET-ID] <Title>
 
 <!--
-Append-only log. Add new entries at the bottom. Never delete earlier entries.
-Entry types: GROOMING (coordinator), PROGRESS (worker), REVIEW (coordinator), FLAG (any agent, about this ticket).
-See docs/kanban/protocol.md section 6.
+Append-only log, written only by scripts/kanban/ticket.mjs. Never edit it by hand or delete entries.
+Entry types: GROOMING (coordinator), PROGRESS (worker), REVIEW (coordinator), FLAG (any agent, about this ticket),
+AMEND (coordinator: edit, status, and grooming entry --edit/--delete, with the old text).
+The sections below are the entry bodies; ticket.mjs writes the headers. See docs/kanban/protocol.md section 6.
 -->
 
 ---

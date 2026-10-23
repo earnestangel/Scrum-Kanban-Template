@@ -70,25 +70,35 @@ To find the ID your tool reports:
 
 ## 3. Board commands: `ticket.mjs`
 
-Every agent on every tool changes ticket state through one script. So the board, the headers, and the
-tier checks are the same everywhere. Agents still edit the grooming fields (`context`, `acceptance`,
-...) in `board.json` directly.
+Every board change, by every agent on every tool, goes through one script. So the board, the headers,
+the stamps, and the tier checks are the same everywhere. Nobody edits `board.json`, `BOARD.md`, or a
+handover note by hand (protocol 6.1). Run `node scripts/kanban/ticket.mjs` without arguments for the full usage.
 
 | Step | Command | Who |
 |---|---|---|
+| Create a ticket | `node scripts/kanban/ticket.mjs create task --title "Add login" --parent STORY-001 --points 3 --agent claude-large --model claude-opus-5-5` | coordinator |
+| Groom it (protocol 3.1) | `node scripts/kanban/ticket.mjs groom TASK-001 --file src/auth.ts --query "AuthService login" --acceptance "login works" --verify-cmd "npm test" --body groom.md --agent claude-large --model claude-opus-5-5` | coordinator |
+| Change a field | `node scripts/kanban/ticket.mjs edit TASK-001 --set title="Add OAuth login" --reason "user renamed it" --agent claude-large --model claude-opus-5-5` | coordinator |
+| Move outside the flow | `node scripts/kanban/ticket.mjs status TASK-001 --to ABANDONED --reason "replaced by TASK-009" --agent claude-large --model claude-opus-5-5` | coordinator |
 | Claim (protocol 6.5 step 4) | `node scripts/kanban/ticket.mjs claim TASK-001 --worker codex-medium --model gpt-6-luna` | worker |
 | Hand over (step 9) | `node scripts/kanban/ticket.mjs handover TASK-001 --status REVIEW --body progress.md` | worker |
 | Block | `... handover TASK-001 --status BLOCKED --reason "API key missing" --body -` | worker |
 | Grooming entry | `node scripts/kanban/ticket.mjs note TASK-001 --type GROOMING --agent claude-large --model claude-opus-5-5 --body groom.md` | coordinator |
-| Flag another ticket | `node scripts/kanban/ticket.mjs note TASK-050 --type FLAG --from TASK-001 --agent codex-medium --summary "UserRepo.save has no transaction" --body -` | anyone |
+| Fix a grooming entry | `... note TASK-001 --type GROOMING --edit 2 --body fixed.md --reason "wrong default"` or `--delete 2 --reason "duplicate"` | coordinator |
+| Flag another ticket | `node scripts/kanban/ticket.mjs note TASK-050 --type FLAG --from TASK-001 --agent codex-medium --model gpt-6-luna --summary "UserRepo.save has no transaction" --body -` | anyone |
 | Review | `node scripts/kanban/ticket.mjs review TASK-001 --outcome DONE --reviewer claude-large --model claude-opus-5-5 --body review.md` | coordinator |
 | Recover an orphaned claim (5.3) | `node scripts/kanban/ticket.mjs recover TASK-001 --coordinator claude-large --model claude-opus-5-5` | coordinator |
 | Inspect | `node scripts/kanban/ticket.mjs show TASK-001` | anyone |
 
 - `--body -` reads the entry body from stdin. `--text "<markdown>"` passes it inline. The body follows `handovers/_TEMPLATE.md`. The script writes the header itself, for example `## PROGRESS · 2026-10-06T14:05:00Z · codex-medium (gpt-6-luna) · REVIEW`.
-- `claim` checks: status `TODO` or `PAUSED`, every `requires` ticket `DONE`, the WIP slot free, and `--model` listed for the ticket's tier. It records `worker_model` on the ticket.
-- `note --type GROOMING`, `review`, and `recover` require a `--model` listed for `large`.
-- Every command runs `render-board.mjs` afterwards. If the board does not validate, the command restores every file it changed and fails.
+- `create <type>` takes `task`, `story`, `epic`, `chore`, or `bug` and picks the next free ID in the width the board uses; `create <ID>` takes a full ID and refuses a used one. New tickets start in `BACKLOG`.
+- `groom` sets `points`, `context` (`--file`, `--symbol`, `--entry-point`, `--query`), `acceptance`, `verify_cmd`, `requires`, and `handovers` from flags or from `--json <file|->`; a repeated flag gives a list, which replaces the old one. It sets `model` by the tier rule. A `BACKLOG` ticket moves to `TODO` when the Definition of Groomed passes; otherwise the command lists what is missing.
+- `edit` changes any field that is not state (`title`, `description`, `parent`, `blocks`, `context.files`, ...). `--set` values are JSON when they parse, else text. It refuses `status`, `model`, `tier_override`, the claim fields, and the stamps. `--reason` is required; the `AMEND` entry records old and new values.
+- `status` makes the coordinator moves no other command makes: `BACKLOG` and `TODO` (for example unblocking a `BLOCKED` ticket), `ABANDONED` (needs `--reason`), and `DONE` for an epic whose children are closed. For `IN_PROGRESS`, `REVIEW`, `PAUSED`, `BLOCKED`, and a ticket's `DONE`, it names the command to use.
+- `claim` checks: status `TODO` or `PAUSED`, every `requires` ticket `DONE`, the WIP slot free, and `--model` listed for the ticket's tier (or, for a 1 point chore, for `large`: the coordinator may run it itself, protocol 6.3.1). It records `worker_model` and appends to `claims`.
+- `create`, `groom`, `edit`, `status`, `note --type GROOMING`, `review`, and `recover` require a `--model` listed for `large`.
+- Every write stamps the ticket with `updated_at` and `last_actor` (`created_at` on `create`), from the machine clock in ISO 8601 UTC. No command takes a time.
+- Every command runs `render-board.mjs` afterwards. If the board does not validate, the command restores every file it changed and fails. On success it records a hash of each board file it wrote in `docs/kanban/.script-writes.json`, which the git `pre-commit` check compares with the staged files.
 - `--model` must be the model you really run on. Claude Code checks it against the transcript. Other tools rely on the agent's honesty, with the review as a backstop (section 12).
 
 ## 4. Claude Code
@@ -138,7 +148,8 @@ Codex reads `AGENTS.md` itself. `init` adds the CodeGraph MCP server to `.codex/
 ```sh
 codex exec -m gpt-6-luna --sandbox workspace-write \
   "Ticket: TASK-001. Worker name: codex-medium. Model ID: gpt-6-luna.
-You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3."
+You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3.
+Change the board only with node scripts/kanban/ticket.mjs: show, claim, note --type FLAG, handover. Never edit board.json, BOARD.md, or a note by hand."
 ```
 
 - The worker must write `docs/kanban/` and run `node`, so the default read-only sandbox is not enough. You choose the sandbox and approval flags, and the coordinator asks you before the first run (protocol 6.3.1).
@@ -151,7 +162,8 @@ You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md secti
 
 ```sh
 gemini -m gemini-3-flash -p "Ticket: TASK-001. Worker name: gemini-medium. Model ID: gemini-3-flash.
-You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3."
+You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3.
+Change the board only with node scripts/kanban/ticket.mjs: show, claim, note --type FLAG, handover. Never edit board.json, BOARD.md, or a note by hand."
 ```
 
 List the Gemini model IDs you use in `tiers.json`, for example `"medium": ["gemini-*-flash"]`.
@@ -166,7 +178,7 @@ opencode reads `AGENTS.md`. `init` adds CodeGraph to `opencode.jsonc`. Define on
     "worker-medium": {
       "mode": "subagent",
       "model": "openai/gpt-6-luna",
-      "prompt": "You are a ticket worker. Follow docs/kanban/protocol.md section 6.5 and section 1.3. Pass --model openai/gpt-6-luna to ticket.mjs."
+      "prompt": "You are a ticket worker. Follow docs/kanban/protocol.md section 6.5 and section 1.3. Change the board only with ticket.mjs (show, claim, note --type FLAG, handover), never by hand. Pass --model openai/gpt-6-luna to ticket.mjs."
     }
   }
 }
@@ -198,7 +210,7 @@ handover notes, so any model can resume. Only the tier decides whether it may.
 3. **If the new model is not listed for that tier**, choose one:
    - **Add it to `tiers.json`.** This counts for every ticket of that tier.
    - **Approve it for this ticket only.** Start the session with `KANBAN_INLINE=<ID>`. `ticket.mjs claim` accepts the mismatch and the Claude Code hooks allow it. The worker must record your approval in its `PROGRESS` entry, and `render-board.mjs` warns while the ticket is in progress.
-   - **Change the ticket's tier.** Add `tier_override` yourself.
+   - **Change the ticket's tier.** Add `tier_override` to `board.json` yourself, run `node scripts/kanban/render-board.mjs`, and commit with `KANBAN_ALLOW_TIER_EDIT=1 KANBAN_ALLOW_MANUAL_EDIT=1`. It is the one board field `ticket.mjs` never writes.
 4. **To resume inline in a Claude Code session** on a model that is not `large`, set `KANBAN_INLINE=<ID>`. That session may then claim, edit project files for that ticket, and hand over. It still may not groom, review, close tickets, or touch `tier_override` or `tiers.json`. Review needs a `large` session.
 
 ## 11. User switches
@@ -209,6 +221,7 @@ These environment variables are for the user. Agents never set them, and the pro
 |---|---|
 | `KANBAN_INLINE=TASK-001[,BUG-002]` | The listed tickets may be executed by the current session on any model, including the coordinator session. Tier mismatches are allowed and shown. Grooming, review, `tier_override`, and `tiers.json` stay protected. |
 | `KANBAN_ALLOW_TIER_EDIT=1` | The git `pre-commit` hook accepts staged changes to `tier_override` or `tiers.json`. Set it only for a commit you made yourself. |
+| `KANBAN_ALLOW_MANUAL_EDIT=1` | The git `pre-commit` hook accepts a staged `board.json` or note that `ticket.mjs` did not write, for example after you resolved a merge conflict in it by hand. Set it only for a commit you made yourself. |
 | `KANBAN_DELEGATE=off` | Disables the Claude Code `worker-delegation.mjs` hook and the `ticket.mjs` tier checks. Last resort. |
 | `CODEGRAPH_FIRST=strict` or `off` | CodeGraph-first hook mode (Claude Code). |
 
@@ -219,12 +232,16 @@ These environment variables are for the user. Agents never set them, and the pro
 | Board validates, `BOARD.md` current | — | yes | yes | yes | — |
 | Lenient handover headers (`·`, `-`, `\|`, `•`) | — | writes canonical | yes | yes | — |
 | Worker model fits the ticket tier | dispatch + real transcript model | `--model` on claim | — | warning on `worker_model` | review checks the `PROGRESS` header |
-| Coordinator on `large` | real transcript model | `--model` on grooming, review, recover | — | — | review |
-| Coordinator never executes | yes (unless `KANBAN_INLINE`) | — | — | — | protocol |
+| Coordinator on `large` | real transcript model | `--model` on create, groom, edit, status, grooming, review, recover | — | — | review |
+| Coordinator never executes (except a 1 point chore) | yes (unless `KANBAN_INLINE`) | claim checks the tier | — | — | protocol |
 | `tier_override` user-only | yes | never written | yes | — | protocol |
 | `tiers.json` user-only | yes | never written | yes | — | protocol |
-| No shell writes to `board.json` | heuristic | — | — | — | protocol |
+| No hand edits of `board.json`, `BOARD.md`, notes | Edit/Write denied for every agent; shell writes (heuristic) | records a hash of each write | rejects a staged file it did not write (`KANBAN_ALLOW_MANUAL_EDIT=1` for the user) | — | protocol |
+| Times, `last_actor`, `claims` | — | stamps every write from the machine clock | validates | validates | — |
 | One ticket in progress | yes | yes | yes | yes | — |
+
+Tools without hooks can still edit a board file by hand while they work; the `pre-commit` hash check
+catches it before it is committed. That is why both checks exist.
 
 **Where it stops:** on tools without hooks, nothing stops an agent from passing a wrong `--model`.
 The protocol forbids it. The worker name and `worker_model` make it visible, and the coordinator checks

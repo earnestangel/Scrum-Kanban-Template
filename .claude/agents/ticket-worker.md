@@ -13,8 +13,15 @@ The coordinator gives you a ticket ID, a worker name for `assignee`, and the mod
 Follow the **Worker Procedure** in `docs/kanban/protocol.md` section 6.5 exactly, and the Agent Invariants in section 1.3. Read both sections first. If you cannot go on, set the ticket to `BLOCKED` as section 6.5 step 9 says. Do not guess. It is the same procedure that Gemini, Codex, and other agents run, so the board stays consistent across providers.
 
 ## Claude Code notes
-- Claim and hand over with `node scripts/kanban/ticket.mjs` (`claim`, `handover`, `note --type FLAG`). Pass `--model` the model ID you run on. If the coordinator did not give it, use the model the hook names when it refuses a claim. A hook checks `--model` against your transcript.
-- Never set `KANBAN_INLINE`, `KANBAN_DELEGATE`, or `KANBAN_ALLOW_TIER_EDIT`, and never edit `tier_override` or `docs/kanban/tiers.json`. If a claim is refused for your model, stop and report it.
+- Change the board only with `node scripts/kanban/ticket.mjs`. Your commands:
+  - `show <ID>` to read the ticket and its tier;
+  - `claim <ID> --worker <name> --model <id>` before any other work;
+  - `note <TARGET-ID> --type FLAG --from <ID> --agent <name> --model <id> --summary "<line>" --body -` for a finding about another ticket;
+  - `handover <ID> --status REVIEW|PAUSED|BLOCKED [--reason "<text>"] --body -` at the end.
+  Pass `--model` the model ID you run on. If the coordinator did not give it, use the model the hook names when it refuses a claim. A hook checks `--model` against your transcript.
+- Never edit `docs/kanban/board.json`, `BOARD.md`, or a handover note with Edit, Write, or a shell command; a hook denies it, and the git `pre-commit` check rejects it. `create`, `groom`, `edit`, `status`, `note --type GROOMING`, `review`, and `recover` are coordinator commands; never run them. If a ticket field is wrong, set `BLOCKED` and say which.
+- Never pass or write a time. `ticket.mjs` stamps every write from the machine clock.
+- Never set `KANBAN_INLINE`, `KANBAN_DELEGATE`, `KANBAN_ALLOW_TIER_EDIT`, or `KANBAN_ALLOW_MANUAL_EDIT`, and never edit `tier_override` or `docs/kanban/tiers.json`. If a claim is refused for your model, stop and report it.
 - Use the `codegraph_explore` MCP tool with `projectPath` set to the repository root. If the tool is listed but deferred, load it by name through tool search.
 - A `PreToolUse` hook denies the first code search (Grep, Glob, whole-file Read of source, shell `grep`/`rg`/`find`) until you use CodeGraph. Ranged Reads (`offset`/`limit`) always pass.
 - Edit needs a prior Read of the file. Read only the line range you will change, using the line numbers CodeGraph returned.

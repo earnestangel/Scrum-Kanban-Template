@@ -28,6 +28,7 @@ export function sandbox({ tiers } = {}) {
   for (const f of fs.readdirSync(path.join(dir, 'docs/kanban/handovers'))) {
     if (!['_TEMPLATE.md', 'HANDOVERS.md'].includes(f)) fs.rmSync(path.join(dir, 'docs/kanban/handovers', f));
   }
+  fs.rmSync(path.join(dir, 'docs/kanban/.script-writes.json'), { force: true });
   const board = JSON.parse(fs.readFileSync(path.join(dir, 'docs/kanban/board.json'), 'utf8'));
   board.stories = [ticket({ id: 'STORY-001', title: 'Story', status: 'TODO', points: 5, model: 'large', children: ['TASK-001', 'TASK-002'] })];
   board.tasks = [
@@ -40,7 +41,8 @@ export function sandbox({ tiers } = {}) {
     read: (rel) => fs.readFileSync(path.join(dir, rel), 'utf8'),
     write: (rel, text) => fs.writeFileSync(path.join(dir, rel), text),
     board: () => JSON.parse(fs.readFileSync(path.join(dir, 'docs/kanban/board.json'), 'utf8')),
-    task: (id) => sb.board().tasks.find((t) => t.id === id) ?? sb.board().stories.find((t) => t.id === id),
+    // Any ticket by ID, from every board.json group.
+    task: (id) => Object.values(sb.board()).filter(Array.isArray).flat().find((t) => t?.id === id),
     setBoard: (b) => fs.writeFileSync(path.join(dir, 'docs/kanban/board.json'), JSON.stringify(b, null, 2) + '\n'),
     // A transcript whose latest assistant reply came from `model`.
     transcript: (name, model, sidechain = false) => {

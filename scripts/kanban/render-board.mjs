@@ -9,8 +9,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { entryRe, tickets } from './board-lib.mjs';
-import { TIERS as MODELS, TIERS_FILE, loadTierModels, modelFitsTier, requiredTier, tierProblem } from './tier-policy.mjs';
+import { ISO_UTC, FIB, ROLES, STATUSES, entryRe, groomingProblems, tickets } from './board-lib.mjs';
+import { TIERS as MODELS, TIERS_FILE, coordinatorMayRun, loadTierModels, modelFitsTier, requiredTier, tierProblem } from './tier-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const boardPath = path.join(root, 'docs', 'kanban', 'board.json');
@@ -20,8 +20,6 @@ const checkOnly = process.argv.includes('--check');
 // codegraph_queries are required only when the repository has a CodeGraph index.
 const hasIndex = fs.existsSync(path.join(root, '.codegraph', 'codegraph.db'));
 
-const FIB = [1, 2, 3, 5, 8, 13, 21];
-const STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'PAUSED', 'BLOCKED', 'REVIEW', 'DONE', 'ABANDONED'];
 const LEGACY_MODELS = { haiku: 'small', sonnet: 'medium', opus: 'large' };
 
 const board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
@@ -42,10 +40,10 @@ const workable = (t) => t.type !== 'epic';
 const needsGrooming = (t) => workable(t) && ['TODO', 'IN_PROGRESS', 'PAUSED', 'BLOCKED', 'REVIEW'].includes(t.status);
 const noteText = (id) => {
   const f = path.join(handoverDir, `${id}.md`);
-  return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+  return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
 };
 // Handover entry headers: "## <TYPE> · <ISO date> · <agent> · <STATUS>" (see _TEMPLATE.md and board-lib.mjs).
-const hasEntry = (id, type, status) => entryRe(type, status).test(noteText(id));
+const hasEntry = (id, type, status) => entryRe(type, status).test(noteText(id) ?? '');
 const STALE_CLAIM_HOURS = 24;
 
 for (const t of all) {
@@ -67,17 +65,7 @@ for (const t of all) {
   else if (t.model && !MODELS.includes(t.model)) errors.push(`${at}: model must be one of ${MODELS.join(', ')}`);
   else if (tierProblem(t)) errors.push(`${at}: ${tierProblem(t)}`);
 
-  if (needsGrooming(t)) {
-    if (!t.model) errors.push(`${at}: no "model" set; grooming sets the tier the rule requires (protocol 1.2)`);
-    if (!t.context?.files?.length && !t.context?.symbols?.length) errors.push(`${at}: context.files or context.symbols is empty; grooming must record where the work is`);
-    if (hasIndex && !t.context?.codegraph_queries?.length) errors.push(`${at}: context.codegraph_queries is empty; grooming must record the queries that found the code`);
-    if (!t.acceptance?.length) errors.push(`${at}: acceptance criteria are empty`);
-    if (!t.verify_cmd) errors.push(`${at}: no verify_cmd; the worker cannot self-check`);
-    if (!(t.handovers ?? []).includes(t.id)) errors.push(`${at}: handovers must include its own note "${t.id}"`);
-    const note = path.join(handoverDir, `${t.id}.md`);
-    if (!fs.existsSync(note)) errors.push(`${at}: handovers/${t.id}.md is missing; grooming must write it`);
-    else if (!entryRe('GROOMING').test(fs.readFileSync(note, 'utf8'))) errors.push(`${at}: handovers/${t.id}.md has no dated "## GROOMING ·" entry`);
-  }
+  if (needsGrooming(t)) for (const p of groomingProblems(t, { noteText, hasIndex })) errors.push(`${at}: ${p}`);
   for (const h of t.handovers ?? []) {
     if (!fs.existsSync(path.join(handoverDir, `${h}.md`))) errors.push(`${at}: handovers lists ${h}, but handovers/${h}.md does not exist`);
   }
@@ -89,6 +77,30 @@ for (const t of all) {
   // Ready for Review (protocol 3.2) and Definition of Done (protocol 3.3).
   if (t.status === 'REVIEW' && !hasEntry(t.id, 'PROGRESS', 'REVIEW')) errors.push(`${at}: REVIEW but handovers/${t.id}.md has no "## PROGRESS · … · REVIEW" entry`);
   if (t.status === 'DONE' && workable(t) && !hasEntry(t.id, 'REVIEW', 'DONE')) warnings.push(`${at}: DONE without a "## REVIEW · … · DONE" entry from the coordinator`);
+  // Stamps and claims (protocol 6.1): ticket.mjs writes them from the machine clock, in ISO 8601 UTC.
+  const iso = (v) => typeof v === 'string' && ISO_UTC.test(v);
+  for (const k of ['created_at', 'updated_at']) if (t[k] != null && !iso(t[k])) errors.push(`${at}: ${k} "${t[k]}" is not ISO 8601 UTC (for example 2026-10-23T15:52:42Z)`);
+  const a = t.last_actor;
+  if (a != null && (typeof a !== 'object' || Array.isArray(a))) errors.push(`${at}: last_actor must be { name, role, model, tier }`);
+  else if (a != null) {
+    if (!ROLES.includes(a.role)) errors.push(`${at}: last_actor.role must be ${ROLES.join(' or ')}, not "${a.role}"`);
+    if (a.tier != null && !MODELS.includes(a.tier)) errors.push(`${at}: last_actor.tier must be one of ${MODELS.join(', ')}, or null`);
+  }
+  if (t.claims != null && !Array.isArray(t.claims)) errors.push(`${at}: claims must be a list`);
+  for (const [i, c] of (Array.isArray(t.claims) ? t.claims : []).entries()) {
+    const where = `${at}: claims[${i}]`;
+    if (!c || typeof c !== 'object') {
+      errors.push(`${where} must be { worker, model, tier, claimed_at, released_at, outcome }`);
+      continue;
+    }
+    if (!iso(c.claimed_at)) errors.push(`${where}.claimed_at is not ISO 8601 UTC`);
+    if (c.released_at != null && !iso(c.released_at)) errors.push(`${where}.released_at is not ISO 8601 UTC`);
+    if (c.tier != null && !MODELS.includes(c.tier)) errors.push(`${where}.tier must be one of ${MODELS.join(', ')}, or null`);
+    if (c.outcome != null && !STATUSES.includes(c.outcome)) errors.push(`${where}.outcome must be a status`);
+    const last = i === t.claims.length - 1;
+    if (c.released_at == null && !(last && t.status === 'IN_PROGRESS')) errors.push(`${where} is still open, but only the last claim of an IN_PROGRESS ticket is open`);
+    if (last && c.released_at != null && t.status === 'IN_PROGRESS') errors.push(`${at}: IN_PROGRESS, but its last claim was released; claim it with ticket.mjs`);
+  }
   if (t.status !== 'IN_PROGRESS' && t.claimed_at) warnings.push(`${at}: is ${t.status} but still has claimed_at; clear it`);
   if (t.status === 'IN_PROGRESS' || t.status === 'REVIEW' || t.status === 'DONE') {
     for (const r of t.requires ?? []) {
@@ -126,7 +138,8 @@ for (const t of active) {
 }
 for (const t of active) {
   // A warning, not an error: CI cannot see a user's per-ticket approval (KANBAN_INLINE, protocol 6.3.1).
-  if (t.worker_model && !modelFitsTier(t.worker_model, requiredTier(t), tierModels.models)) {
+  const coordinatorRuns = coordinatorMayRun(t) && modelFitsTier(t.worker_model, 'large', tierModels.models);
+  if (t.worker_model && !coordinatorRuns && !modelFitsTier(t.worker_model, requiredTier(t), tierModels.models)) {
     warnings.push(`${t.id}: worker model "${t.worker_model}" is not listed for tier "${requiredTier(t)}" in ${TIERS_FILE}; its PROGRESS entry must record the user's approval`);
   }
 }
@@ -164,34 +177,41 @@ const cols = {
   since: ['Claimed', (t) => t.claimed_at ?? '—'],
   reason: ['Reason', (t) => t.blocked_reason ?? '—'],
   note: ['Handover', (t) => link(t.id)],
+  // UTC, as stored: BOARD.md must not depend on the machine's time zone, so --check passes everywhere.
+  updated: ['Updated (UTC)', (t) => (t.updated_at ? t.updated_at.replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, '') : '—')],
+  actor: ['Last actor', (t) => (t.last_actor ? `${t.last_actor.name ?? '?'} (${[t.last_actor.role, t.last_actor.tier, t.last_actor.model].filter(Boolean).join(', ')})` : '—')],
   ready: ['Ready', (t) => ((t.requires ?? []).every((r) => byId.get(r)?.status === 'DONE') ? 'yes' : 'blocked')],
 };
 const inStatus = (s, pred = workable) => all.filter((t) => t.status === s && pred(t));
+// Newest change first; tickets without a stamp last.
+const newest = (rows) => [...rows].sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''));
+const stamped = (list) => [...list, cols.updated, cols.actor];
 
 let md = `# Live Scrum Kanban Board
 
 <!-- GENERATED from board.json by scripts/kanban/render-board.mjs. Do not edit by hand. -->
 
 > **WIP rule**: at most ${wip} ticket in \`IN_PROGRESS\` on the whole board. Any agent (Claude, Gemini, Codex, or another) may hold it.
+> Every change goes through \`node scripts/kanban/ticket.mjs\`. Times are UTC; the web board (\`npm run board:web\`) shows local time.
 
 ## ⚡ In Progress
-${table(active, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.assignee, cols.since, cols.model, cols.note])}
+${table(newest(active), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.assignee, cols.since, cols.model, cols.note]))}
 ## 🚧 Blocked
-${table(blocked, [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.reason, cols.note])}
+${table(blocked, stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.reason, cols.note]))}
 ## ⏸️ Paused
-${table(inStatus('PAUSED'), [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note])}
+${table(inStatus('PAUSED'), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note]))}
 ## 🎯 To Do
-${table(inStatus('TODO'), [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.requires, cols.ready, cols.model])}
+${table(inStatus('TODO'), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.requires, cols.ready, cols.model]))}
 ## 🔍 Review
-${table(inStatus('REVIEW'), [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note])}
+${table(newest(inStatus('REVIEW')), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note]))}
 ## ✅ Done
-${table(inStatus('DONE'), [cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note])}
+${table(newest(inStatus('DONE')), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent, cols.note]))}
 ## ❌ Abandoned
-${table(inStatus('ABANDONED'), [cols.id, cols.type, cols.title, cols.pts, cols.note])}
+${table(inStatus('ABANDONED'), stamped([cols.id, cols.type, cols.title, cols.pts, cols.note]))}
 ## 📋 Backlog
-${table(inStatus('BACKLOG'), [cols.id, cols.type, cols.title, cols.pts, cols.parent])}
+${table(inStatus('BACKLOG'), stamped([cols.id, cols.type, cols.title, cols.pts, cols.parent]))}
 ## 🗺️ Epics
-${table(all.filter((t) => t.type === 'epic'), [cols.id, cols.title, ['Status', (t) => t.status], cols.pts, ['Children', (t) => (t.children ?? []).join(', ') || '—'], cols.note])}`;
+${table(all.filter((t) => t.type === 'epic'), stamped([cols.id, cols.title, ['Status', (t) => t.status], cols.pts, ['Children', (t) => (t.children ?? []).join(', ') || '—'], cols.note]))}`;
 
 for (const w of warnings) console.warn(`warning: ${w}`);
 for (const e of errors) console.error(`error: ${e}`);

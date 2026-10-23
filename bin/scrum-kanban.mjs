@@ -20,7 +20,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TIERS, aliasForTier, loadTierModels, modelFitsTier, policyTier, resolveClaudeAlias, tierProblem } from '../scripts/kanban/tier-policy.mjs';
+import { HANDOVER_DIR, SCRIPT_WRITES_FILE, isGuarded, noteEntries, nowIso, recordScriptWrites, toIso } from '../scripts/kanban/board-lib.mjs';
+import { TIERS, aliasForTier, loadTierModels, modelFitsTier, policyTier, requiredTier, resolveClaudeAlias, tierProblem } from '../scripts/kanban/tier-policy.mjs';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(fs.readFileSync(path.join(SRC, 'package.json'), 'utf8'));
@@ -45,11 +46,14 @@ const dest = (p) => path.join(DEST, p);
 const read = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
 const log = [];
 const manual = [];
+// Board files the installer wrote, recorded like ticket.mjs writes so the pre-commit check accepts them.
+const scriptWrites = {};
 
 function write(rel, content, action) {
   const before = read(dest(rel));
   if (before !== null && before.replace(/\r\n/g, '\n') === content.replace(/\r\n/g, '\n')) return;
   log.push(`${action.padEnd(8)} ${rel}`);
+  if (isGuarded(rel)) scriptWrites[rel] = content;
   if (dryRun) return;
   fs.mkdirSync(path.dirname(dest(rel)), { recursive: true });
   fs.writeFileSync(dest(rel), content);
@@ -128,7 +132,8 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
 // get a claimed_at, which the validator now requires. Every version: $schema and _ticket_template
 // follow the template, and top-level keys the template has but the board lacks are added with the
 // template's defaults, in the template's key order. From 0.5.x: open tickets get the tier the standing
-// tier rule requires (tier-policy.mjs), unless the user set a tier_override. Writes only if something changed.
+// tier rule requires (tier-policy.mjs), unless the user set a tier_override. From 0.7.x: tickets get the
+// stamps and claims history of 0.8 (backfillStamps). Writes only if something changed.
 function migrateBoard() {
   const rel = 'docs/kanban/board.json';
   const text = read(dest(rel));
@@ -160,6 +165,7 @@ function migrateBoard() {
       t.claimed_at = now;
       changed = true;
     }
+    if (typed && backfillStamps(t, typed)) changed = true;
   }
   for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
     if (k in board) {
@@ -177,6 +183,34 @@ function migrateBoard() {
   for (const [k, v] of Object.entries(board)) if (!(k in next)) next[k] = v;
   if (JSON.stringify(next) !== JSON.stringify(board)) changed = true;
   if (changed) write(rel, JSON.stringify(next, null, 2) + '\n', 'migrate');
+}
+
+// Adds the 0.8 fields a ticket lacks; fields it has are kept. created_at and updated_at come from the
+// first and last dated entry of its handover note, else from the git history of the note, else null.
+// last_actor comes from the latest entry header that names "<agent> (<model>)", else null. An
+// IN_PROGRESS ticket gets its open claim. Returns whether the ticket changed.
+function backfillStamps(t, typed) {
+  const before = JSON.stringify(t);
+  const rel = `${HANDOVER_DIR}/${t.id}.md`;
+  const entries = noteEntries(read(dest(rel)) ?? '').map((e) => ({ ...e, at: toIso(e.date) })).filter((e) => e.at).sort((a, b) => a.at.localeCompare(b.at));
+  let dates = entries.map((e) => e.at);
+  if (!dates.length && !('created_at' in t && 'updated_at' in t) && fs.existsSync(dest(rel))) {
+    dates = git('-C', DEST, 'log', '--format=%cI', '--', rel).stdout.split('\n').map(toIso).filter(Boolean).sort();
+  }
+  const { models } = loadTierModels(DEST);
+  const tierOf = (model, want) => (modelFitsTier(model, want, models) ? want : (TIERS.find((k) => modelFitsTier(model, k, models)) ?? null));
+  if (!('created_at' in t)) t.created_at = dates[0] ?? null;
+  if (!('updated_at' in t)) t.updated_at = dates.at(-1) ?? null;
+  if (!('last_actor' in t)) {
+    const named = entries.map((e) => ({ e, m: e.rest.match(/([^\s·()][^·()]*?)\s*\(([^()\s]+)\)/) })).filter((x) => x.m).at(-1);
+    const role = named?.e.type === 'PROGRESS' ? 'worker' : 'coordinator';
+    t.last_actor = named ? { name: named.m[1].trim(), role, model: named.m[2], tier: tierOf(named.m[2], role === 'worker' ? requiredTier(typed) : 'large') } : null;
+  }
+  if (!('claims' in t)) {
+    const open = t.status === 'IN_PROGRESS' && t.assignee;
+    t.claims = open ? [{ worker: t.assignee, model: t.worker_model ?? null, tier: t.worker_model ? tierOf(t.worker_model, requiredTier(typed)) : null, claimed_at: toIso(t.claimed_at) ?? nowIso(), released_at: null, outcome: null }] : [];
+  }
+  return JSON.stringify(t) !== before;
 }
 
 const between = (text, start, end) => text.slice(text.indexOf(start) + start.length, text.indexOf(end));
@@ -256,7 +290,7 @@ function install(isUpgrade) {
     else if (!oc.includes('codegraph')) manual.push('opencode.jsonc exists: add the "mcp.codegraph" entry from the template by hand.');
   }
 
-  appendLines('.gitignore', ['.claude/settings.local.json']);
+  appendLines('.gitignore', ['.claude/settings.local.json', SCRIPT_WRITES_FILE]);
   appendLines('.gitattributes', ['scripts/git-hooks/* text eol=lf']);
 
   // Git hooks: only take over core.hooksPath when nothing else owns it. pre-commit checks the board for
@@ -275,6 +309,7 @@ function install(isUpgrade) {
   }
 
   write(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', saved.version ? 'update' : 'create');
+  if (!dryRun && Object.keys(scriptWrites).length) recordScriptWrites(DEST, scriptWrites);
 
   if (!dryRun && !self) spawnSync(process.execPath, [dest('scripts/kanban/render-board.mjs')], { stdio: 'inherit' });
 
