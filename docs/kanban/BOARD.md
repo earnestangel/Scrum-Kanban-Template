@@ -5,6 +5,9 @@
 > **WIP rule**: at most 1 ticket in `IN_PROGRESS` on the whole board. Any agent (Claude, Gemini, Codex, or another) may hold it.
 > Every change goes through `node scripts/kanban/ticket.mjs`. Times are UTC; the web board (`npm run board:web`) shows local time.
 
+## 🧑 Waiting on the user
+*Nothing.*
+
 ## ⚡ In Progress
 *None.*
 
@@ -29,5 +32,14 @@
 ## 📋 Backlog
 *None.*
 
+## 📚 Stories
+*None.*
+
 ## 🗺️ Epics
 *None.*
+
+## 🧭 Design coverage
+*Off. Declare design sources with `ticket.mjs design <path>` to turn it on (protocol 10).*
+
+## 📈 Velocity
+*No ticket is done yet.*

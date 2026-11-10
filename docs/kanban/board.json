@@ -2,12 +2,22 @@
   "$schema": "./protocol.md",
   "wip_limit": 1,
   "coordinator_paths": [],
+  "size_limit_kb": 300,
+  "design_sources": [],
+  "adr": {
+    "dir": "docs/adr"
+  },
+  "knowledge": {
+    "dir": "docs/findings"
+  },
+  "decisions_pending": [],
   "_ticket_template": {
     "id": "TASK-001",
     "title": "Short imperative title",
     "description": "Why the work is needed (optional)",
     "status": "BACKLOG",
     "points": 3,
+    "order": 10,
     "parent": "STORY-001",
     "children": [],
     "requires": [],
@@ -19,20 +29,56 @@
     "worker_model": null,
     "blocked_reason": null,
     "context": {
-      "files": ["src/path/to/file.ts"],
-      "symbols": ["ClassName.method", "functionName"],
-      "entry_points": ["src/index.ts"],
-      "codegraph_queries": ["ClassName.method functionName"]
+      "files": [
+        "src/path/to/file.ts"
+      ],
+      "symbols": [
+        "ClassName.method",
+        "functionName"
+      ],
+      "entry_points": [
+        "src/index.ts"
+      ],
+      "codegraph_queries": [
+        "ClassName.method functionName"
+      ]
     },
-    "acceptance": ["Observable result that proves the ticket is done"],
+    "design": {
+      "refs": [
+        "D-001"
+      ]
+    },
+    "adrs": [],
+    "acceptance": [
+      "Observable result that proves the ticket is done"
+    ],
     "verify_cmd": "npm test -- path/to/test",
-    "handovers": ["TASK-001"],
+    "handovers": [
+      "TASK-001"
+    ],
     "created_at": "2026-10-23T15:52:42Z",
     "updated_at": "2026-10-23T16:10:05Z",
-    "last_actor": { "name": "claude-large", "role": "coordinator", "model": "claude-opus-5-5", "tier": "large" },
+    "last_actor": {
+      "name": "claude-large",
+      "role": "coordinator",
+      "model": "claude-opus-5-5",
+      "tier": "large"
+    },
     "claims": [
-      { "worker": "claude-medium", "model": "claude-sonnet-5-5", "tier": "medium", "claimed_at": "2026-10-23T16:00:00Z", "released_at": "2026-10-23T16:08:12Z", "outcome": "REVIEW" }
-    ]
+      {
+        "worker": "claude-medium",
+        "model": "claude-sonnet-5-5",
+        "tier": "medium",
+        "claimed_at": "2026-10-23T16:00:00Z",
+        "released_at": "2026-10-23T16:08:12Z",
+        "outcome": "REVIEW"
+      }
+    ],
+    "started_at": "2026-10-23T16:00:00Z",
+    "done_at": "2026-10-23T16:10:05Z",
+    "done_by": "claude-medium",
+    "done_by_model": "claude-sonnet-5-5",
+    "rework_count": 0
   },
   "epics": [],
   "stories": [],

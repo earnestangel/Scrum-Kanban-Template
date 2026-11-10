@@ -43,11 +43,15 @@ test('claim accepts any model the user lists in tiers.json', () => {
 
 test('claim checks WIP and prerequisites', () => {
   const sb = sandbox();
+  const b = sb.board();
+  b.tasks.push({ ...b.tasks[0], id: 'TASK-003', handovers: ['TASK-003'] });
+  sb.setBoard(b);
+  sb.write('docs/kanban/handovers/TASK-003.md', sb.read('docs/kanban/handovers/TASK-001.md'));
   assert.equal(sb.ticket(['claim', 'TASK-002', '--worker', 'w', '--model', SONNET]).status, 1);
   assert.equal(sb.ticket(['claim', 'TASK-001', '--worker', 'w', '--model', SONNET]).status, 0);
-  const r = sb.ticket(['claim', 'STORY-001', '--worker', 'w', '--model', OPUS]);
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /already IN_PROGRESS/);
+  assert.match(sb.ticket(['claim', 'TASK-003', '--worker', 'w', '--model', SONNET]).stderr, /already IN_PROGRESS/);
+  // A story with tasks is never claimed: its tasks are.
+  assert.match(sb.ticket(['claim', 'STORY-001', '--worker', 'w', '--model', OPUS]).stderr, /its tasks are claimed/);
 });
 
 test('grooming, review, and recover need a large-tier model', () => {
@@ -79,9 +83,8 @@ test('BLOCKED needs a reason; FLAG writes the index row; review DONE removes it'
   b.stories[0].status = 'REVIEW';
   sb.setBoard(b);
   for (const id of ['TASK-001', 'TASK-002']) sb.write(`docs/kanban/handovers/${id}.md`, `${sb.read(`docs/kanban/handovers/${id}.md`)}\n## REVIEW · 2026-10-06T00:00:00Z · c · DONE\n`);
-  sb.write('docs/kanban/handovers/STORY-001.md', `${sb.read('docs/kanban/handovers/STORY-001.md')}\n## PROGRESS · 2026-10-06T00:00:00Z · w · REVIEW\n`);
   assert.equal(sb.render().status, 0, sb.render().stderr);
-  const r = sb.ticket(['review', 'STORY-001', '--outcome', 'DONE', '--reviewer', 'c', '--model', OPUS, '--text', 'ok']);
+  const r = sb.ticket(['close', 'STORY-001', '--agent', 'c', '--model', OPUS, '--text', 'ok\n\nKnowledge: none']);
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(sb.read('docs/kanban/handovers/HANDOVERS.md'), /STORY-001/);
 });
@@ -89,8 +92,8 @@ test('BLOCKED needs a reason; FLAG writes the index row; review DONE removes it'
 test('a failed render restores every file', () => {
   const sb = sandbox();
   sb.ticket(['claim', 'TASK-001', '--worker', 'w', '--model', SONNET]);
-  // Break the board outside this ticket after the last render: the story's note loses its GROOMING entry.
-  sb.write('docs/kanban/handovers/STORY-001.md', '# STORY-001\n');
+  // Break the board outside this ticket after the last render: another task's note loses its GROOMING entry.
+  sb.write('docs/kanban/handovers/TASK-002.md', '# TASK-002\n');
   const files = ['docs/kanban/board.json', 'docs/kanban/BOARD.md', 'docs/kanban/handovers/TASK-001.md'];
   const before = files.map((f) => sb.read(f));
   const r = sb.ticket(['handover', 'TASK-001', '--status', 'REVIEW', '--text', 'done']);
@@ -220,7 +223,8 @@ test('status: coordinator moves; ABANDONED needs --reason; other moves name thei
   b.epics = [{ id: 'EPIC-001', title: 'Epic', status: 'TODO', points: 8, children: ['STORY-001'], handovers: [] }];
   b.stories[0].parent = 'EPIC-001';
   sb.setBoard(b);
-  assert.match(sb.ticket(['status', 'EPIC-001', '--to', 'DONE', ...C]).stderr, /STORY-001 \(TODO\)/);
+  assert.match(sb.ticket(['status', 'EPIC-001', '--to', 'DONE', ...C]).stderr, /closes it with close EPIC-001/);
+  assert.match(sb.ticket(['close', 'EPIC-001', '--text', 'Knowledge: none', ...C]).stderr, /STORY-001 \(TODO\)/);
 });
 
 test('note --edit/--delete rewrite a GROOMING entry and keep the old text in an AMEND entry', () => {

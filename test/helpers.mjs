@@ -63,7 +63,11 @@ export function sandbox({ tiers } = {}) {
     },
   };
   sb.setBoard(board);
-  for (const id of ['STORY-001', 'TASK-001', 'TASK-002']) sb.write(`docs/kanban/handovers/${id}.md`, `# ${id}\n\n## GROOMING · 2026-10-01T00:00:00Z · claude-large (claude-opus-5-5)\n\nApproach.\n`);
+  // The story is a container: its note starts with a STATE block (protocol 6.2.1).
+  const state = `## STATE · 2026-10-01T00:00:00Z · claude-large (claude-opus-5-5)\n\n${STATE}\n\n---\n\n`;
+  for (const id of ['STORY-001', 'TASK-001', 'TASK-002']) {
+    sb.write(`docs/kanban/handovers/${id}.md`, `# ${id}\n\n${id === 'STORY-001' ? state : ''}## GROOMING · 2026-10-01T00:00:00Z · claude-large (claude-opus-5-5)\n\nApproach.\n`);
+  }
   if (tiers) sb.write('docs/kanban/tiers.json', JSON.stringify({ tiers }, null, 2));
   const r = sb.render();
   if (r.status !== 0) throw new Error(`sandbox board invalid:\n${r.stderr}`);
@@ -77,6 +81,8 @@ function cleanEnv() {
   return env;
 }
 
+// A valid STATE body (protocol 6.2.1).
+export const STATE = '**Scope**\n- All of it.\n\n**Order**\n- TASK-001, then TASK-002.\n\n**Decisions in force**\n- None.\n\n**Open for the user**\n- Nothing.';
 export const LUNA = 'bedrock/global.openai.gpt-6-luna';
 export const OPUS = 'claude-opus-5-5';
 export const SONNET = 'claude-sonnet-5-5';

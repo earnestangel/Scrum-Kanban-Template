@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { test } from 'node:test';
 import { OPUS, sandbox } from './helpers.mjs';
 
@@ -86,4 +87,62 @@ test('pre-commit: tier_override and tiers.json changes need the user switch', ()
   sb.write('docs/kanban/tiers.json', JSON.stringify({ tiers: { large: ['*'], medium: ['*'], small: ['*'] } }));
   git('add', '-A');
   assert.match(check().stderr, /tiers\.json/);
+});
+
+// ---------- 0.9 ----------
+
+test('pre-commit: only the user accepts an ADR', () => {
+  const { sb, git, check } = repo();
+  fs.mkdirSync(sb.file('docs/adr'), { recursive: true });
+  sb.write('docs/adr/0001-relay.md', '# Relay\n\nStatus: Proposed\n');
+  git('add', '-A');
+  assert.equal(check().status, 0, check().stderr);
+  git('commit', '-qm', 'adr', '--no-verify');
+  sb.write('docs/adr/0001-relay.md', '# Relay\n\nStatus: Accepted\n');
+  sb.write('docs/adr/0002-new.md', '# New\n\n| Status | Accepted |\n');
+  git('add', '-A');
+  const r = check();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /accepts an ADR:\n\s+docs\/adr\/0001-relay\.md \(Proposed -> Accepted\)\n\s+docs\/adr\/0002-new\.md \(new -> Accepted\)[\s\S]*KANBAN_ALLOW_ADR_ACCEPT=1/);
+  assert.equal(check({ KANBAN_ALLOW_ADR_ACCEPT: '1' }).status, 0);
+});
+
+test('pre-commit: a design source that changed after its hash was recorded fails; archive moves pass', () => {
+  const { sb, git, check } = repo();
+  fs.mkdirSync(sb.file('docs/design'), { recursive: true });
+  // A binary source: the staged bytes are hashed, not a text reading of them.
+  fs.writeFileSync(sb.file('docs/design/flow.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 0xff, 0xfe]));
+  assert.equal(sb.ticket(['design', 'docs/design/flow.png', ...C]).status, 0);
+  assert.equal(sb.ticket(['element', 'new', '--title', 'Relay', '--source', 'docs/design/flow.png', '--ticket', 'TASK-001', ...C]).status, 0);
+  git('add', '-A');
+  assert.equal(check().status, 0, check().stderr);
+  git('commit', '-qm', 'anchor', '--no-verify');
+  fs.writeFileSync(sb.file('docs/design/flow.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 9, 9, 9]));
+  git('add', '-A');
+  const r = check();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /design source docs\/design\/flow\.png changed since its hash was recorded[^\n]*TASK-001/);
+  assert.equal(sb.ticket(['design', 'docs/design/flow.png', ...C]).status, 0);
+  git('add', '-A');
+  assert.equal(check().status, 0, check().stderr);
+
+  // A hand edit of the ledger fails like a hand edit of the board.
+  sb.write('docs/kanban/design.json', sb.read('docs/kanban/design.json').replace('Relay', 'Relay!'));
+  git('add', '-A');
+  assert.match(check().stderr, /did not write[\s\S]*docs\/kanban\/design\.json/);
+});
+
+test('pre-commit: notes moved by archive are script writes', () => {
+  const { sb, git, check } = repo();
+  const b = sb.board();
+  b.chores = [{ id: 'CHORE-001', title: 'Old chore', status: 'DONE', points: 1, model: 'small', handovers: ['CHORE-001'], done_at: '2026-10-02T00:00:00Z' }];
+  sb.setBoard(b);
+  sb.write('docs/kanban/handovers/CHORE-001.md', '# CHORE-001\n\n## REVIEW · 2026-10-02T00:00:00Z · c · DONE\n');
+  sb.render();
+  git('add', '-A');
+  git('commit', '-qm', 'chore', '--no-verify');
+  const r = sb.ticket(['archive', 'CHORE-001', ...C]);
+  assert.equal(r.status, 0, r.stderr);
+  git('add', '-A');
+  assert.equal(check().status, 0, check().stderr);
 });
