@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Serves a read-only web view of docs/kanban/board.json and its handover notes on localhost.
+// Serves a read-only web view of docs/kanban/board.json, its archive, and the handover notes on localhost.
 //
 //   node scripts/kanban/board-server.mjs                 serve on http://127.0.0.1:4477
 //   node scripts/kanban/board-server.mjs --open          also open the page in the default browser
@@ -22,6 +22,9 @@ const root = path.resolve(opt('root') ?? path.join(here, '..', '..'));
 const kanbanDir = path.join(root, 'docs', 'kanban');
 const boardPath = path.join(kanbanDir, 'board.json');
 const handoverDir = path.join(kanbanDir, 'handovers');
+// Closed tickets that the archive command moved off the board: their records and their notes.
+const archiveDir = path.join(handoverDir, 'archive');
+const archivePath = path.join(kanbanDir, 'board-archive.json');
 const pagePath = path.join(here, 'board-web', 'index.html');
 const basePort = Number(opt('port') ?? process.env.PORT ?? 4477);
 const NOT_NOTES = new Set(['_TEMPLATE.md', 'HANDOVERS.md']);
@@ -67,10 +70,18 @@ const routes = {
     send(res, 200, text, 'application/json');
   },
   '/api/handovers': (req, res) => {
-    const ids = fs.existsSync(handoverDir)
-      ? fs.readdirSync(handoverDir).filter((f) => f.endsWith('.md') && !NOT_NOTES.has(f)).map((f) => f.slice(0, -3))
-      : [];
-    send(res, 200, JSON.stringify(ids), 'application/json');
+    const notes = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.md') && !NOT_NOTES.has(f)).map((f) => f.slice(0, -3)) : []);
+    send(res, 200, JSON.stringify([...new Set([...notes(handoverDir), ...notes(archiveDir)])]), 'application/json');
+  },
+  // The archived records, by group. Empty when nothing is archived.
+  '/api/archive': (req, res) => {
+    const text = read(archivePath) ?? '{}';
+    try {
+      JSON.parse(text);
+    } catch (e) {
+      return send(res, 500, JSON.stringify({ error: `board-archive.json is not valid JSON: ${e.message}` }), 'application/json');
+    }
+    send(res, 200, text, 'application/json');
   },
   '/api/meta': (req, res) => send(res, 200, JSON.stringify({ project: path.basename(root) }), 'application/json'),
   '/api/flags':(req, res) => send(res, 200, read(path.join(handoverDir, 'HANDOVERS.md')) ?? ''),
@@ -88,7 +99,7 @@ const server = http.createServer((req, res) => {
   if (routes[url.pathname]) return routes[url.pathname](req, res);
   // Handover note by ticket ID. The strict ID pattern keeps requests inside handovers/.
   const id = url.pathname.match(/^\/api\/handovers\/([A-Za-z]+-\d+)$/)?.[1];
-  const note = id && read(path.join(handoverDir, `${id}.md`));
+  const note = id && (read(path.join(handoverDir, `${id}.md`)) ?? read(path.join(archiveDir, `${id}.md`)));
   if (note !== null && note !== undefined) return send(res, 200, note, 'text/markdown; charset=utf-8');
   send(res, 404, 'Not found');
 });

@@ -88,15 +88,25 @@ handover note by hand (protocol 6.1). Run `node scripts/kanban/ticket.mjs` witho
 | Flag another ticket | `node scripts/kanban/ticket.mjs note TASK-050 --type FLAG --from TASK-001 --agent codex-medium --model gpt-6-luna --summary "UserRepo.save has no transaction" --body -` | anyone |
 | Review | `node scripts/kanban/ticket.mjs review TASK-001 --outcome DONE --reviewer claude-large --model claude-opus-5-5 --body review.md` | coordinator |
 | Recover an orphaned claim (5.3) | `node scripts/kanban/ticket.mjs recover TASK-001 --coordinator claude-large --model claude-opus-5-5` | coordinator |
+| Read everything for a ticket (6.3) | `node scripts/kanban/ticket.mjs context TASK-001` | worker |
+| Write what is true now (6.2.1) | `node scripts/kanban/ticket.mjs state STORY-001 --agent claude-large --model claude-opus-5-5 --body state.md` | coordinator |
+| Supersede a stale entry (6.2) | `... note EPIC-001 --type GROOMING --supersedes 1 --body new-scope.md` (`--supersedes STORY-002#3` for another note) | coordinator |
+| Close a story or epic (4.1) | `node scripts/kanban/ticket.mjs close STORY-001 --agent claude-large --model claude-opus-5-5 --body close.md` | coordinator |
+| Archive its children (6.6) | `node scripts/kanban/ticket.mjs archive STORY-001 --agent claude-large --model claude-opus-5-5` | coordinator |
+| Ask the user (5.4) | `... decision new --question "SQS or SNS?" --blocks TASK-004`, then `... decision DEC-001 --resolve "SQS"` | coordinator |
+| Declare or re-record a design source (10.1, 10.5) | `node scripts/kanban/ticket.mjs design docs/design/flow.svg --agent claude-large --model claude-opus-5-5` | coordinator |
+| Add a design element (10.2) | `... element new --title "Apply relay" --source docs/design/flow.svg --ticket TASK-004` | coordinator |
+| Index a finding (6.7) | `node scripts/kanban/ticket.mjs finding docs/findings/2026-11-01-apply-paths.md --summary "Applies run over SSO" --agent codex-medium` | anyone |
+| Velocity (6.1) | `node scripts/kanban/ticket.mjs stats [--days 14] [--json]` | anyone |
 | Inspect | `node scripts/kanban/ticket.mjs show TASK-001` | anyone |
 
 - `--body -` reads the entry body from stdin. `--text "<markdown>"` passes it inline. The body follows `handovers/_TEMPLATE.md`. The script writes the header itself, for example `## PROGRESS · 2026-10-06T14:05:00Z · codex-medium (gpt-6-luna) · REVIEW`.
 - `create <type>` takes `task`, `story`, `epic`, `chore`, or `bug` and picks the next free ID in the width the board uses; `create <ID>` takes a full ID and refuses a used one. New tickets start in `BACKLOG`.
-- `groom` sets `points`, `context` (`--file`, `--symbol`, `--entry-point`, `--query`), `acceptance`, `verify_cmd`, `requires`, and `handovers` from flags or from `--json <file|->`; a repeated flag gives a list, which replaces the old one. It sets `model` by the tier rule. A `BACKLOG` ticket moves to `TODO` when the Definition of Groomed passes; otherwise the command lists what is missing.
+- `groom` sets `points`, `order`, `context` (`--file`, `--symbol`, `--entry-point`, `--query`), `acceptance`, `verify_cmd`, `requires`, `handovers`, the design link (`--design-ref <D-ID>` or `--design-na "<reason>"`), and `adrs` (`--adr`) from flags or from `--json <file|->`; a repeated flag gives a list, which replaces the old one. It sets `model` by the tier rule. A `BACKLOG` ticket moves to `TODO` when the Definition of Groomed passes; otherwise the command lists what is missing.
 - `edit` changes any field that is not state (`title`, `description`, `parent`, `blocks`, `context.files`, ...). `--set` values are JSON when they parse, else text. It refuses `status`, `model`, `tier_override`, the claim fields, and the stamps. `--reason` is required; the `AMEND` entry records old and new values.
-- `status` makes the coordinator moves no other command makes: `BACKLOG` and `TODO` (for example unblocking a `BLOCKED` ticket), `ABANDONED` (needs `--reason`), and `DONE` for an epic whose children are closed. For `IN_PROGRESS`, `REVIEW`, `PAUSED`, `BLOCKED`, and a ticket's `DONE`, it names the command to use.
-- `claim` checks: status `TODO` or `PAUSED`, every `requires` ticket `DONE`, the WIP slot free, and `--model` listed for the ticket's tier (or, for a 1 point chore, for `large`: the coordinator may run it itself, protocol 6.3.1). It records `worker_model` and appends to `claims`.
-- `create`, `groom`, `edit`, `status`, `note --type GROOMING`, `review`, and `recover` require a `--model` listed for `large`.
+- `status` makes the coordinator moves no other command makes: `BACKLOG` and `TODO` (for example unblocking a `BLOCKED` ticket) and `ABANDONED` (needs `--reason`). For `IN_PROGRESS`, `REVIEW`, `PAUSED`, `BLOCKED`, and `DONE`, it names the command to use. The status and points of an epic or of a story with children are derived; `close` sets their `DONE` once every child is closed.
+- `claim` checks: status `TODO` or `PAUSED`, every `requires` ticket `DONE`, the WIP slot free, and `--model` listed for the ticket's tier (or, for a 1 point chore, for `large`: the coordinator may run it itself, protocol 6.3.1). It also refuses a ticket whose ADR is not accepted, that a `decisions_pending` entry blocks, whose design source changed or whose design link is missing, whose story or epic has no `STATE` block, or that is not the lowest `order` that can start (`--out-of-order "<the user's reason>"` records an exception). It records `worker_model`, sets `started_at` on the first claim, and appends to `claims`.
+- `create`, `groom`, `edit`, `status`, `note --type GROOMING`, `note --supersedes`, `state`, `review`, `close`, `archive`, `recover`, `decision`, `design`, and `element` require a `--model` listed for `large`.
 - Every write stamps the ticket with `updated_at` and `last_actor` (`created_at` on `create`), from the machine clock in ISO 8601 UTC. No command takes a time.
 - Every command runs `render-board.mjs` afterwards. If the board does not validate, the command restores every file it changed and fails. On success it records a hash of each board file it wrote in `docs/kanban/.script-writes.json`, which the git `pre-commit` check compares with the staged files.
 - `--model` must be the model you really run on. Claude Code checks it against the transcript. Other tools rely on the agent's honesty, with the review as a backstop (section 12).
@@ -149,7 +159,7 @@ Codex reads `AGENTS.md` itself. `init` adds the CodeGraph MCP server to `.codex/
 codex exec -m gpt-6-luna --sandbox workspace-write \
   "Ticket: TASK-001. Worker name: codex-medium. Model ID: gpt-6-luna.
 You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3.
-Change the board only with node scripts/kanban/ticket.mjs: show, claim, note --type FLAG, handover. Never edit board.json, BOARD.md, or a note by hand."
+Change the board only with node scripts/kanban/ticket.mjs: context, claim, note --type FLAG, finding, handover. Never edit board.json, BOARD.md, or a note by hand."
 ```
 
 - The worker must write `docs/kanban/` and run `node`, so the default read-only sandbox is not enough. You choose the sandbox and approval flags, and the coordinator asks you before the first run (protocol 6.3.1).
@@ -163,7 +173,7 @@ Change the board only with node scripts/kanban/ticket.mjs: show, claim, note --t
 ```sh
 gemini -m gemini-3-flash -p "Ticket: TASK-001. Worker name: gemini-medium. Model ID: gemini-3-flash.
 You are the worker. Follow the Worker Procedure in docs/kanban/protocol.md section 6.5 and the Agent Invariants in section 1.3.
-Change the board only with node scripts/kanban/ticket.mjs: show, claim, note --type FLAG, handover. Never edit board.json, BOARD.md, or a note by hand."
+Change the board only with node scripts/kanban/ticket.mjs: context, claim, note --type FLAG, finding, handover. Never edit board.json, BOARD.md, or a note by hand."
 ```
 
 List the Gemini model IDs you use in `tiers.json`, for example `"medium": ["gemini-*-flash"]`.
@@ -178,7 +188,7 @@ opencode reads `AGENTS.md`. `init` adds CodeGraph to `opencode.jsonc`. Define on
     "worker-medium": {
       "mode": "subagent",
       "model": "openai/gpt-6-luna",
-      "prompt": "You are a ticket worker. Follow docs/kanban/protocol.md section 6.5 and section 1.3. Change the board only with ticket.mjs (show, claim, note --type FLAG, handover), never by hand. Pass --model openai/gpt-6-luna to ticket.mjs."
+      "prompt": "You are a ticket worker. Follow docs/kanban/protocol.md section 6.5 and section 1.3. Change the board only with ticket.mjs (context, claim, note --type FLAG, finding, handover), never by hand. Pass --model openai/gpt-6-luna to ticket.mjs."
     }
   }
 }
@@ -221,9 +231,10 @@ These environment variables are for the user. Agents never set them, and the pro
 |---|---|
 | `KANBAN_INLINE=TASK-001[,BUG-002]` | The listed tickets may be executed by the current session on any model, including the coordinator session. Tier mismatches are allowed and shown. Grooming, review, `tier_override`, and `tiers.json` stay protected. |
 | `KANBAN_ALLOW_TIER_EDIT=1` | The git `pre-commit` hook accepts staged changes to `tier_override` or `tiers.json`. Set it only for a commit you made yourself. |
-| `KANBAN_ALLOW_MANUAL_EDIT=1` | The git `pre-commit` hook accepts a staged `board.json` or note that `ticket.mjs` did not write, for example after you resolved a merge conflict in it by hand. Set it only for a commit you made yourself. |
+| `KANBAN_ALLOW_MANUAL_EDIT=1` | The git `pre-commit` hook accepts a staged `board.json`, `board-archive.json`, `design.json`, or note that `ticket.mjs` did not write, for example after you resolved a merge conflict in it by hand. Set it only for a commit you made yourself. |
+| `KANBAN_ALLOW_ADR_ACCEPT=1` | The git `pre-commit` hook accepts a staged change that sets an ADR to an accepted status. Accepting an ADR is your decision (protocol 10.4). Set it only for a commit you made yourself. |
 | `KANBAN_DELEGATE=off` | Disables the Claude Code `worker-delegation.mjs` hook and the `ticket.mjs` tier checks. Last resort. |
-| `CODEGRAPH_FIRST=strict` or `off` | CodeGraph-first hook mode (Claude Code). |
+| `CODEGRAPH_FIRST=strict` or `off` | CodeGraph-first hook mode (Claude Code). `strict` denies every code search until CodeGraph is used; `off` disables the hook. |
 
 ## 12. What is enforced where
 
@@ -239,6 +250,14 @@ These environment variables are for the user. Agents never set them, and the pro
 | No hand edits of `board.json`, `BOARD.md`, notes | Edit/Write denied for every agent; shell writes (heuristic) | records a hash of each write | rejects a staged file it did not write (`KANBAN_ALLOW_MANUAL_EDIT=1` for the user) | — | protocol |
 | Times, `last_actor`, `claims` | — | stamps every write from the machine clock | validates | validates | — |
 | One ticket in progress | yes | yes | yes | yes | — |
+| Epic and story status and points derived | — | derives on every write | validates | validates | — |
+| Design link, ledger, source hashes (once sources are declared) | Edit/Write of `design.json` denied | `groom`, `element`, `design`; `claim` refuses a stale or missing link | validates the staged design files | validates | — |
+| Design check and Design line | — | `handover --status REVIEW`, `review`, `close` refuse a body without them | — | — | review |
+| Only the user accepts an ADR | — | `claim` refuses a ticket whose ADR is not accepted | rejects a staged acceptance (`KANBAN_ALLOW_ADR_ACCEPT=1` for the user) | — | protocol |
+| `STATE` block before work; epic `STATE` refreshed per story | — | `claim`, `review`, `close` refuse | validates its sections | validates | — |
+| Knowledge index complete; Knowledge line on a story close | — | `finding`; `review` and `close` refuse | validates | validates | protocol (facts not in provider memory) |
+| Lane order | — | `claim` refuses, or records `--out-of-order` | warns | warns | — |
+| Archived tickets unchanged, IDs never reused | Edit/Write denied | `archive`, `create` | validates stubs against the archive | validates | — |
 
 Tools without hooks can still edit a board file by hand while they work; the `pre-commit` hash check
 catches it before it is committed. That is why both checks exist.
