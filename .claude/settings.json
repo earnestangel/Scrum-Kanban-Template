@@ -15,16 +15,6 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/prompt-context.mjs\""
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Grep|Glob|Read|Bash|PowerShell",

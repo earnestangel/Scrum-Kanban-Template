@@ -13,15 +13,15 @@
 //   --no-ci                do not add the GitHub Actions board check
 //
 // Never overwrites project data: tickets, handover notes, and your own text outside the marked blocks in
-// AGENTS.md, CLAUDE.md, and GEMINI.md stay as they are. board.json gets schema updates in place (see migrateBoard).
+// AGENTS.md, CLAUDE.md, and GEMINI.md stay as they are. board.json gets schema updates in place (scripts/kanban/migrate.mjs).
 // docs/kanban/tiers.json (which models count as each tier) is created once and then belongs to the user.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HANDOVER_DIR, SCRIPT_WRITES_FILE, isGuarded, noteEntries, nowIso, recordScriptWrites, toIso } from '../scripts/kanban/board-lib.mjs';
-import { TIERS, aliasForTier, loadTierModels, modelFitsTier, policyTier, requiredTier, resolveClaudeAlias, tierProblem } from '../scripts/kanban/tier-policy.mjs';
+import { SCRIPT_WRITES_FILE, isGuarded, recordScriptWrites } from '../scripts/kanban/board-lib.mjs';
+import { TIERS, aliasForTier, loadTierModels, modelFitsTier, resolveClaudeAlias } from '../scripts/kanban/tier-policy.mjs';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(fs.readFileSync(path.join(SRC, 'package.json'), 'utf8'));
@@ -127,90 +127,16 @@ function upsertBlock(rel, start, end, body, { onlyIfMissing = false } = {}) {
   write(rel, next, text ? 'merge' : 'create');
 }
 
-// Migrates older boards. From 0.1.x: Claude model names become provider-neutral tiers, and the
-// per-worker/parallel WIP keys become one board-wide wip_limit. From 0.2.x: IN_PROGRESS tickets
-// get a claimed_at, which the validator now requires. Every version: $schema and _ticket_template
-// follow the template, and top-level keys the template has but the board lacks are added with the
-// template's defaults, in the template's key order. From 0.5.x: open tickets get the tier the standing
-// tier rule requires (tier-policy.mjs), unless the user set a tier_override. From 0.7.x: tickets get the
-// stamps and claims history of 0.8 (backfillStamps). Writes only if something changed.
+// Runs the installed scripts/kanban/migrate.mjs: schema keys, legacy fields, stamps, velocity fields, derived
+// containers, and KNOWLEDGE.md (see that file). It is safe to run again. Returns its output; with --dry-run
+// the scripts are not installed yet, so the template's copy cannot run against this project and nothing runs.
 function migrateBoard() {
-  const rel = 'docs/kanban/board.json';
-  const text = read(dest(rel));
-  if (text === null) return;
-  let board;
-  try {
-    board = JSON.parse(text);
-  } catch {
-    manual.push(`${rel} is not valid JSON. Fix it, then run upgrade again.`);
-    return;
-  }
-  const tiers = { haiku: 'small', sonnet: 'medium', opus: 'large' };
-  let changed = false;
-  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  const groups = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
-  const typeOf = new Map(Object.entries(groups).flatMap(([g, type]) => (board[g] ?? []).map((t) => [t, t.type ?? type])));
-  for (const t of [board._ticket_template, ...typeOf.keys()]) {
-    if (t && tiers[t.model]) {
-      t.model = tiers[t.model];
-      changed = true;
-    }
-    const typed = typeOf.has(t) && { ...t, type: typeOf.get(t) };
-    if (typed && !t.tier_override && tierProblem(typed)) {
-      log.push(`retier   ${t.id}: ${t.model} -> ${policyTier(typed)}`);
-      t.model = policyTier(typed);
-      changed = true;
-    }
-    if (t?.status === 'IN_PROGRESS' && !t.claimed_at) {
-      t.claimed_at = now;
-      changed = true;
-    }
-    if (typed && backfillStamps(t, typed)) changed = true;
-  }
-  for (const k of ['wip_limit_per_worker', 'max_parallel_workers']) {
-    if (k in board) {
-      delete board[k];
-      changed = true;
-    }
-  }
-  // Schema: template-owned keys are replaced, missing keys are added, project data is kept.
-  const tpl = JSON.parse(read(src(rel)));
-  const next = {};
-  for (const [k, v] of Object.entries(tpl)) {
-    const owned = k === '$schema' || k === '_ticket_template';
-    next[k] = owned || !(k in board) ? v : board[k];
-  }
-  for (const [k, v] of Object.entries(board)) if (!(k in next)) next[k] = v;
-  if (JSON.stringify(next) !== JSON.stringify(board)) changed = true;
-  if (changed) write(rel, JSON.stringify(next, null, 2) + '\n', 'migrate');
-}
-
-// Adds the 0.8 fields a ticket lacks; fields it has are kept. created_at and updated_at come from the
-// first and last dated entry of its handover note, else from the git history of the note, else null.
-// last_actor comes from the latest entry header that names "<agent> (<model>)", else null. An
-// IN_PROGRESS ticket gets its open claim. Returns whether the ticket changed.
-function backfillStamps(t, typed) {
-  const before = JSON.stringify(t);
-  const rel = `${HANDOVER_DIR}/${t.id}.md`;
-  const entries = noteEntries(read(dest(rel)) ?? '').map((e) => ({ ...e, at: toIso(e.date) })).filter((e) => e.at).sort((a, b) => a.at.localeCompare(b.at));
-  let dates = entries.map((e) => e.at);
-  if (!dates.length && !('created_at' in t && 'updated_at' in t) && fs.existsSync(dest(rel))) {
-    dates = git('-C', DEST, 'log', '--format=%cI', '--', rel).stdout.split('\n').map(toIso).filter(Boolean).sort();
-  }
-  const { models } = loadTierModels(DEST);
-  const tierOf = (model, want) => (modelFitsTier(model, want, models) ? want : (TIERS.find((k) => modelFitsTier(model, k, models)) ?? null));
-  if (!('created_at' in t)) t.created_at = dates[0] ?? null;
-  if (!('updated_at' in t)) t.updated_at = dates.at(-1) ?? null;
-  if (!('last_actor' in t)) {
-    const named = entries.map((e) => ({ e, m: e.rest.match(/([^\s·()][^·()]*?)\s*\(([^()\s]+)\)/) })).filter((x) => x.m).at(-1);
-    const role = named?.e.type === 'PROGRESS' ? 'worker' : 'coordinator';
-    t.last_actor = named ? { name: named.m[1].trim(), role, model: named.m[2], tier: tierOf(named.m[2], role === 'worker' ? requiredTier(typed) : 'large') } : null;
-  }
-  if (!('claims' in t)) {
-    const open = t.status === 'IN_PROGRESS' && t.assignee;
-    t.claims = open ? [{ worker: t.assignee, model: t.worker_model ?? null, tier: t.worker_model ? tierOf(t.worker_model, requiredTier(typed)) : null, claimed_at: toIso(t.claimed_at) ?? nowIso(), released_at: null, outcome: null }] : [];
-  }
-  return JSON.stringify(t) !== before;
+  if (dryRun) return fs.existsSync(dest('docs/kanban/board.json')) ? '  migrate  docs/kanban/board.json would be migrated by scripts/kanban/migrate.mjs (run it with --dry-run after the install to preview)' : '';
+  const r = spawnSync(process.execPath, [dest('scripts/kanban/migrate.mjs')], { encoding: 'utf8' });
+  const text = `${r.stdout}${r.stderr}`;
+  if (r.status !== 0) manual.push('The board does not validate after the migration. Read the errors below, fix them with scripts/kanban/ticket.mjs, then run: node scripts/kanban/migrate.mjs');
+  // Quiet when there was nothing to migrate.
+  return /^\s+nothing to change$/m.test(text) && r.status === 0 ? text.split('\n').filter((l) => /^BOARD\.md written|^warning|^Waiting|^ADRs|^Ready/.test(l)).join('\n') : text;
 }
 
 const between = (text, start, end) => text.slice(text.indexOf(start) + start.length, text.indexOf(end));
@@ -240,7 +166,6 @@ function install(isUpgrade) {
   // Project data.
   copyOnce('docs/kanban/board.json');
   copyOnce('docs/kanban/tiers.json');
-  if (!self) migrateBoard();
   copyOnce('docs/kanban/handovers/HANDOVERS.md');
   if (cfg.ci) copyOnce('.github/workflows/kanban-board.yml');
 
@@ -260,22 +185,31 @@ function install(isUpgrade) {
     }
   }
 
-  // Claude Code hooks and permissions. Existing entries are kept; ours are added once. CodeGraph-only
-  // hooks are skipped with --no-codegraph; the board hooks (session start, worker delegation) are not.
+  // Claude Code hooks and permissions. The project's own entries are kept. Entries that run a template
+  // script (scripts/hooks/*.mjs) are template-owned: they are replaced by this version's, so a changed
+  // matcher arrives and a hook the template dropped goes away. CodeGraph-only hooks are skipped with
+  // --no-codegraph; the board hooks (session start, worker delegation) are not.
   const tpl = JSON.parse(read(src('.claude/settings.json')));
-  const codegraphOnly = /codegraph-first|prompt-context/;
+  const codegraphOnly = /codegraph-first/;
+  const ours = (h) => /scripts[\/]hooks[\/][\w-]+\.mjs/.test(h?.command ?? '');
   mergeJson('.claude/settings.json', (s) => {
     s.permissions ??= {};
     s.permissions.allow = [...new Set([...(s.permissions.allow ?? []), ...(cfg.codegraph ? tpl.permissions.allow : [])])];
     s.hooks ??= {};
+    for (const event of Object.keys(s.hooks)) {
+      s.hooks[event] = (s.hooks[event] ?? []).map((g) => ({ ...g, hooks: (g.hooks ?? []).filter((h) => !ours(h)) })).filter((g) => g.hooks.length);
+      if (!s.hooks[event].length) delete s.hooks[event];
+    }
     for (const [event, groups] of Object.entries(tpl.hooks)) {
       for (const g of groups) {
         if (!cfg.codegraph && g.hooks.some((h) => codegraphOnly.test(h.command))) continue;
-        s.hooks[event] ??= [];
-        const have = JSON.stringify(s.hooks[event]);
-        if (!g.hooks.every((h) => have.includes(h.command.replace(/"/g, '\\"')))) s.hooks[event].push(g);
+        (s.hooks[event] ??= []).push(g);
       }
     }
+    // "codegraph install" adds its own UserPromptSubmit hook. It injects symbol source into every prompt,
+    // also prompts that are not about code. The template no longer ships one (docs/codegraph.md).
+    const promptHook = (s.hooks.UserPromptSubmit ?? []).some((g) => (g.hooks ?? []).some((h) => /codegraph(\.cmd)?["']?\s+prompt-hook/.test(h.command ?? '')));
+    if (promptHook) manual.push('.claude/settings.json has a "codegraph prompt-hook" UserPromptSubmit hook (added by "codegraph install"). It adds symbol source to every prompt, also prompts that are not about code. Remove it unless you want that; see docs/codegraph.md in the template.');
   });
 
   if (cfg.codegraph) {
@@ -311,14 +245,16 @@ function install(isUpgrade) {
   write(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', saved.version ? 'update' : 'create');
   if (!dryRun && Object.keys(scriptWrites).length) recordScriptWrites(DEST, scriptWrites);
 
-  if (!dryRun && !self) spawnSync(process.execPath, [dest('scripts/kanban/render-board.mjs')], { stdio: 'inherit' });
+  // Board data: scripts/kanban/migrate.mjs brings board.json to this version's schema, in place, and renders it.
+  const migrated = self ? null : migrateBoard();
 
   console.log(`${dryRun ? '[dry run] ' : ''}Scrum Kanban ${PKG.version} ${isUpgrade ? 'upgrade' : 'install'} into ${DEST}`);
   console.log(log.length ? log.map((l) => '  ' + l).join('\n') : '  nothing to change');
   for (const m of manual) console.log(`  manual   ${m}`);
+  if (migrated?.trim()) console.log(migrated.trimEnd());
   if (!isUpgrade && !dryRun) {
     console.log('\nNext steps:');
-    if (cfg.codegraph) console.log('  1. Install CodeGraph, then run: codegraph install && codegraph init -y   (optional; see README)');
+    if (cfg.codegraph) console.log('  1. Install CodeGraph, then run: codegraph install && codegraph init -y   (optional; see docs/codegraph.md in the template)');
     console.log(`  ${cfg.codegraph ? 2 : 1}. Commit the new files. PRs target \`${cfg.base_branch}\`; create that branch if it does not exist.`);
     console.log(`  ${cfg.codegraph ? 3 : 2}. Run: npx github:earnestangel/Scrum-Kanban-Template doctor`);
   }
@@ -338,6 +274,9 @@ function doctor() {
     ok(cg.status === 0, `codegraph CLI ${cg.status === 0 ? cg.stdout.trim() : 'not found'}`, 'Optional. Install it for cheaper workers; see README.');
     ok(fs.existsSync(dest('.codegraph/codegraph.db')), 'CodeGraph index', 'Optional. Run: codegraph init -y');
   }
+  // "codegraph install" adds its own prompt hook; the template ships none since 0.9 (docs/codegraph.md).
+  const settings = read(dest('.claude/settings.json')) ?? '';
+  ok(!/codegraph(.cmd)?[\\"']*s+prompt-hook/.test(settings), '.claude/settings.json has no "codegraph prompt-hook" UserPromptSubmit hook', 'Optional. It adds symbol source to every prompt, also prompts that are not about code. Remove the entry unless you want that.');
   const hp = git('-C', DEST, 'config', '--get', 'core.hooksPath').stdout.trim();
   ok(hp === 'scripts/git-hooks', `core.hooksPath = ${hp || '(unset)'}`, 'Recommended: the pre-commit board check works for every provider. Run: git config core.hooksPath scripts/git-hooks');
   // Which models count as each tier, and what the Claude Code aliases resolve to in this shell.

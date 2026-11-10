@@ -23,7 +23,8 @@
 //   KANBAN_DELEGATE=off               disables this hook.
 
 import path from 'node:path';
-import { BOARD_FILE, BOARD_MD, HANDOVER_DIR, SCRIPT_WRITES_FILE, loadBoard, tickets as flatten } from '../kanban/board-lib.mjs';
+import { ARCHIVE_FILE, BOARD_FILE, BOARD_MD, DESIGN_FILE, HANDOVER_DIR, SCRIPT_WRITES_FILE, isContainer, loadBoard, tickets as flatten } from '../kanban/board-lib.mjs';
+import { adrConfig } from '../kanban/design-lib.mjs';
 import { TIERS_FILE, aliasForTier, coordinatorMayRun, loadTierModels, modelFitsTier, requiredTier, resolveClaudeAlias, tierProblem, tiersOfModel } from '../kanban/tier-policy.mjs';
 import { agentTranscript, allowWithNote, deny, lastModel, readEvent } from './hook-lib.mjs';
 
@@ -47,7 +48,8 @@ const inline = new Set((process.env.KANBAN_INLINE ?? '').split(',').map((s) => s
 const tool = event.tool_name;
 const ti = event.tool_input ?? {};
 const byId = new Map(tickets.map((t) => [t.id, t]));
-const active = tickets.filter((t) => t.status === 'IN_PROGRESS');
+// A story or epic with children is IN_PROGRESS while its children are worked; only a leaf holds the WIP slot.
+const active = tickets.filter((t) => t.status === 'IN_PROGRESS' && !isContainer(t, tickets));
 const isSub = !!event.agent_id;
 // Older Claude Code versions send no agent_type; trust them as workers.
 const isWorker = isSub && (event.agent_type ?? 'ticket-worker') === 'ticket-worker';
@@ -61,10 +63,12 @@ const notCoordinator = () =>
   `${whoAmI} is not. Ask the user to switch with /model ${largeAlias}, or to add this model to "large" in ${TIERS_FILE} (protocol 1.1, 1.2).`;
 // Board files no agent edits by hand: [shell pattern, repository path, the ticket.mjs commands to use].
 const BOARD_PATHS = [
-  ['board\\.json', BOARD_FILE, 'create, groom, and edit for fields, status for coordinator moves, claim and handover for workers'],
+  ['board\\.json', BOARD_FILE, 'create, groom, and edit for fields, status and close for coordinator moves, decision for what waits on the user, design for design sources, claim and handover for workers'],
+  ['board-archive\\.json', ARCHIVE_FILE, 'archive writes it'],
+  ['design\\.json', DESIGN_FILE, 'element adds or changes a design element'],
   ['BOARD\\.md', BOARD_MD, 'every command renders it; render-board.mjs regenerates it'],
   // _TEMPLATE.md is template-owned text, not board data.
-  ['handovers[\\\\/](?!_TEMPLATE\\.md)', `${HANDOVER_DIR}/`,'note --type GROOMING or FLAG, handover, review; fix a grooming entry with note --type GROOMING --edit <n> | --delete <n> --reason <text>'],
+  ['handovers[\\\\/](?!_TEMPLATE\\.md)', `${HANDOVER_DIR}/`, 'note --type GROOMING or FLAG, handover, review, close; state for the STATE block; fix a grooming entry with note --type GROOMING --edit <n> | --delete <n> --reason <text>, or mark it with --supersedes'],
   ['\\.script-writes\\.json', SCRIPT_WRITES_FILE, 'ticket.mjs records it'],
 ];
 const handEdit = (rel) =>
@@ -119,7 +123,7 @@ if (tool === 'Bash' || tool === 'PowerShell') {
         `|\\b(cp|mv|copy|move|copy-item|move-item|rename-item)\\b.*${target(p)}["']?\\s*$`,
       'i',
     );
-  const VIA_SCRIPTS = /^\s*node\s+["']?(\.\/)?scripts[\\/]kanban[\\/](ticket|render-board)\.mjs\b/i;
+  const VIA_SCRIPTS = /^\s*node\s+["']?(\.\/)?scripts[\\/]kanban[\\/](ticket|render-board|migrate)\.mjs\b/i;
   for (const seg of cmd.split(/&&|\|\|?|;|\n/)) {
     if (VIA_SCRIPTS.test(seg)) continue;
     if (writesInto('tiers\\.json').test(seg)) deny(`Only the user edits ${TIERS_FILE} (protocol 1.2). Tell the user which model you propose for which tier, and why.`);
@@ -131,13 +135,15 @@ if (tool === 'Bash' || tool === 'PowerShell') {
     return x.includes(y) || y.includes(x);
   };
   // The second word is a ticket ID, or the type for "create <type>".
-  for (const m of cmd.matchAll(/ticket\.mjs["']?\s+(\w+)\s+([A-Za-z]+(?:-\d+)?)([^;&|\n]*)/g)) {
+  for (const m of cmd.matchAll(/ticket\.mjs["']?\s+(\w+)\s+["']?([A-Za-z]+(?:-\d+)?)([^;&|\n]*)/g)) {
     const [, sub, id, args] = m;
     const given = args.match(/--model[=\s]+["']?([^"'\s]+)/)?.[1];
     if (given && actorModel && !same(given, actorModel)) {
       deny(`ticket.mjs --model must be the model you run on. The transcript shows ${actorModel}, not ${given}. Run it again with --model "${actorModel}".`);
     }
-    const coordinatorOnly = ['create', 'groom', 'edit', 'status', 'review', 'recover'].includes(sub) || (sub === 'note' && /--type[=\s]+["']?grooming/i.test(args));
+    const coordinatorOnly =
+      ['create', 'groom', 'edit', 'status', 'review', 'recover', 'state', 'close', 'archive', 'decision', 'design', 'element'].includes(sub) ||
+      (sub === 'note' && (/--type[=\s]+["']?grooming/i.test(args) || /--supersedes\b/.test(args)));
     if (coordinatorOnly && (isSub || !isCoordinator)) deny(isSub ? `${sub} is coordinator work; a subagent never runs it (protocol 1.1, 6.5).` : notCoordinator());
     // Standing exception: the coordinator may run a 1 point chore itself (protocol 6.3.1).
     const ownChore = byId.has(id) && coordinatorMayRun(byId.get(id)) && isCoordinator;
@@ -186,7 +192,9 @@ const globRe = (g) =>
     caseFold,
   );
 const extra = Array.isArray(board.coordinator_paths) ? board.coordinator_paths : [];
-const allowed = ['docs/kanban/', ...extra].filter((g) => typeof g === 'string' && g.trim());
+// Project facts and proposed ADRs are coordinator writing too: the findings folder and the ADR folder (protocol 6.7, 10.4).
+const facts = [board.knowledge?.dir ?? 'docs/findings', adrConfig(board).dir].filter((d) => typeof d === 'string' && d.trim()).map((d) => `${d.replace(/\\/g, '/').replace(/\/$/, '')}/`);
+const allowed = ['docs/kanban/', ...facts, ...extra].filter((g) => typeof g === 'string' && g.trim());
 if (allowed.some((g) => globRe(g).test(rel))) process.exit(0);
 
 const alias = aliasForTier(requiredTier(t), tierModels);
