@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kanban Board</title>
 <!--
-  Read-only web view of docs/kanban/board.json. Served by scripts/kanban/board-server.mjs.
+  Read-only web view of docs/kanban/board.json and its archive. Served by scripts/kanban/board-server.mjs.
   No dependencies: plain CSS, plain JS, and a small Markdown renderer for handover notes.
 -->
 <style>
@@ -176,8 +176,22 @@ details.raw summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .entry-head .edate { color: var(--muted); }
 .e-grooming { --ec: var(--info); } .e-progress { --ec: var(--warn); } .e-review { --ec: var(--ok); } .e-flag { --ec: var(--danger); } .e-amend { --ec: var(--purple); }
 .st-EDITED, .st-DELETED { background: var(--purple-bg); color: var(--purple); }
-.note-src { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+.note-src { font-size: 12px; color: var(--muted); margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .note-src + .md { margin-bottom: 28px; }
+.note-src .why { font-weight: 600; padding: 1px 6px; border-radius: 3px; background: var(--grey-bg); }
+.ctx-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
+.ctx-bar select { height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); padding: 0 10px; font: inherit; }
+.state-box { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; padding: 2px 12px 8px; margin: 0 0 14px; background: var(--info-bg); }
+.state-box > .entry-head { background: none; border: 0; padding: 8px 0 0; margin: 0; }
+.e-state { --ec: var(--accent); } .e-decision { --ec: var(--purple); } .e-other { --ec: var(--muted); }
+details.gone { margin: 10px 0; border: 1px dashed var(--border); border-radius: 6px; padding: 0 10px; opacity: .72; }
+details.gone > summary { cursor: pointer; list-style: none; }
+details.gone > summary::-webkit-details-marker { display: none; }
+details.gone > summary .entry-head { margin: 8px 0; background: none; text-decoration: line-through; text-decoration-color: var(--muted); }
+details.gone > summary .st { text-decoration: none; display: inline-block; }
+.st-SUPERSEDED, .st-RESOLVED { background: var(--grey-bg); color: var(--muted); }
+.who { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.avatar.past { opacity: .75; outline: 2px solid var(--ok-bg); }
 
 @media (max-width: 640px) {
   .top, .filters, .epics, .board { padding-left: 16px; padding-right: 16px; }
@@ -228,7 +242,9 @@ const LABEL = { BACKLOG: 'Backlog', TODO: 'To Do', IN_PROGRESS: 'In Progress', P
 const COLOR = { BACKLOG: 'var(--muted)', TODO: 'var(--muted)', IN_PROGRESS: 'var(--info)', PAUSED: 'var(--warn)', BLOCKED: 'var(--danger)', REVIEW: 'var(--purple)', DONE: 'var(--ok)', ABANDONED: 'var(--border)' };
 // Same group-to-type mapping as scripts/kanban/render-board.mjs.
 const GROUPS = { epics: 'epic', stories: 'story', tasks: 'task', chores: 'chore', bugs: 'bug' };
-const KNOWN = ['id', 'title', 'description', 'status', 'type', 'points', 'parent', 'children', 'requires', 'blocks', 'model', 'assignee', 'claimed_at', 'worker_model', 'blocked_reason', 'context', 'acceptance', 'verify_cmd', 'handovers', 'created_at', 'updated_at', 'last_actor', 'claims'];
+const KNOWN = ['id', 'title', 'description', 'status', 'type', 'points', 'parent', 'children', 'requires', 'blocks', 'model', 'assignee', 'claimed_at', 'worker_model', 'blocked_reason', 'context', 'acceptance', 'verify_cmd', 'handovers', 'created_at', 'updated_at', 'last_actor', 'claims', 'order', 'design', 'adrs', 'started_at', 'done_at', 'done_by', 'done_by_model', 'rework_count', 'stamps_backfilled', 'archived', 'archived_at', 'estimate'];
+// What the Context tab shows: the ticket's own note, what it inherits, or both.
+const CTX = { all: 'All context', own: 'This ticket', inherited: 'Inherited' };
 // Card order within a column. Tickets without the value sort last in both directions.
 const SORTS = { '': 'Board order', updated: 'Last change', created: 'Created', claimed: 'Claimed', id: 'ID', points: 'Points' };
 const STALE_CLAIM_HOURS = 24;
@@ -242,7 +258,7 @@ const ICON = {
 };
 const NOTE_SVG = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9 1.5V5.5h4M6 8.5h5M6 11h4"/></svg>';
 
-const S = { board: null, all: [], byId: new Map(), raw: new Map(), notes: new Set(), flags: [], project: '', open: null, tab: 'details', noteCache: new Map() };
+const S = { board: null, all: [], byId: new Map(), raw: new Map(), notes: new Set(), flags: [], project: '', open: null, tab: 'details', ctx: 'all', noteCache: new Map() };
 const F0 = { q: '', epic: '', type: '', who: '', actor: '', role: '', model: '', tier: '', sort: '', dir: 'desc', notes: false, abandoned: false };
 const F = { ...F0 };
 const FILTER_KEYS = ['q', 'epic', 'type', 'who', 'actor', 'role', 'model', 'tier', 'sort'];
@@ -270,9 +286,11 @@ async function get(url, kind) {
 
 async function load() {
   try {
-    const [board, notes, flags, meta] = await Promise.all([
-      get('/api/board', 'json'), get('/api/handovers', 'json'), get('/api/flags', 'text'), get('/api/meta', 'json').catch(() => ({})),
+    const [board, notes, flags, meta, archive] = await Promise.all([
+      get('/api/board', 'json'), get('/api/handovers', 'json'), get('/api/flags', 'text'), get('/api/meta', 'json').catch(() => ({})), get('/api/archive', 'json').catch(() => ({})),
     ]);
+    // An archived ticket is a stub on the board; its full record is in board-archive.json.
+    const archived = new Map(Object.keys(GROUPS).flatMap((g) => (Array.isArray(archive[g]) ? archive[g] : []).map((t) => [t.id, t])));
     S.board = board;
     S.notes = new Set(notes);
     S.flags = parseFlags(flags);
@@ -281,8 +299,9 @@ async function load() {
     for (const [group, type] of Object.entries(GROUPS)) {
       for (const t of board[group] ?? []) {
         if (!t || !t.id) continue;
-        const rec = { ...t, type: t.type ?? type };
-        S.all.push(rec); S.byId.set(rec.id, rec); S.raw.set(rec.id, t);
+        const full = t.archived && archived.has(t.id) ? { ...archived.get(t.id), ...t } : t;
+        const rec = { ...full, type: full.type ?? type };
+        S.all.push(rec); S.byId.set(rec.id, rec); S.raw.set(rec.id, full);
       }
     }
     banner('');
@@ -331,12 +350,16 @@ function matches(t) {
     if (F.epic === '-' ? e : e?.id !== F.epic) return false;
   }
   if (F.type && t.type !== F.type) return false;
-  if (F.who && (F.who === '-' ? t.assignee : t.assignee !== F.who)) return false;
+  if (F.who && (F.who === '-' ? actorOf(t) : actorOf(t)?.name !== F.who)) return false;
   if (F.notes && !noteIds(t).length) return false;
   for (const [k, field] of ACTOR_FILTERS) if (F[k] && (F[k] === '-' ? t.last_actor?.[field] : t.last_actor?.[field] !== F[k])) return false;
   return true;
 }
 
+// Who works on it now, or who delivered it. The claim fields are cleared on handover, so a ticket that is in
+// REVIEW, DONE, or back in TODO shows done_by (the worker of its last REVIEW handover), else its last claim.
+const lastWorker = (t) => t.done_by ?? (Array.isArray(t.claims) ? [...t.claims].reverse().find((c) => c?.worker)?.worker : null) ?? null;
+const actorOf = (t) => (t.assignee ? { name: t.assignee, now: true } : lastWorker(t) ? { name: lastWorker(t), now: false } : null);
 const lastClaimAt = (t) => t.claimed_at ?? (Array.isArray(t.claims) ? t.claims.at(-1)?.claimed_at : null) ?? null;
 const SORT_KEY = {
   updated: (t) => Date.parse(t.updated_at ?? ''),
@@ -356,8 +379,13 @@ function bySort(a, b) {
 const typeIcon = (type) => `<span class="ti ti-${ICON[type] ? type : 'unknown'}" title="${esc(cap(type ?? 'unknown'))}"><svg viewBox="0 0 16 16">${ICON[type] ?? ICON.unknown}</svg></span>`;
 const statusPill = (s) => `<span class="st st-${cls(s)}">${esc(LABEL[s] ?? s)}</span>`;
 const epicPill = (e) => `<span class="tag epic-pill" style="--h:${hue(e.id)}" title="${esc(e.id)}">${esc(e.title ?? e.id)}</span>`;
-function avatar(name) {
+function avatar(name, { past = false, title } = {}) {
   if (!name) return '<span class="avatar none" title="Unassigned">?</span>';
+  if (past || title) {
+    const parts = String(name).split(/[\s\-_./@:]+/).filter(Boolean);
+    const ini = (parts.length > 1 ? parts[0][0] + parts[1][0] : String(name).slice(0, 2)).toUpperCase();
+    return `<span class="avatar ${past ? 'past' : ''}" style="--h:${hue(name)}" title="${esc(title ?? name)}">${esc(ini)}</span>`;
+  }
   const parts = String(name).split(/[\s\-_./@:]+/).filter(Boolean);
   const ini = (parts.length > 1 ? parts[0][0] + parts[1][0] : String(name).slice(0, 2)).toUpperCase();
   return `<span class="avatar" style="--h:${hue(name)}" title="${esc(name)}">${esc(ini)}</span>`;
@@ -399,14 +427,17 @@ function renderAll() {
 function renderStats() {
   const work = S.all.filter(workable);
   const p = progress(S.all);
-  const active = work.filter((t) => t.status === 'IN_PROGRESS');
+  // A story with tasks is IN_PROGRESS while its tasks are worked; only a leaf ticket holds the WIP slot.
+  const active = work.filter((t) => t.status === 'IN_PROGRESS' && isLeaf(t));
   const wip = S.board?.wip_limit ?? 1;
+  const waiting = Array.isArray(S.board?.decisions_pending) ? S.board.decisions_pending : [];
   const blocked = work.filter((t) => t.status === 'BLOCKED').length;
   $('#stats').innerHTML = [
     `<span class="stat"><b>${work.length}</b> tickets</span>`,
     `<span class="stat"><b>${p.done}/${p.total}</b> pts done</span>`,
     `<span class="stat ${active.length > wip ? 'bad' : ''}" title="${esc(active.map((t) => `${t.id} by ${t.assignee ?? '(none)'}`).join(', ') || 'Nothing in progress')}">WIP <b>${active.length}/${wip}</b></span>`,
     blocked ? `<span class="stat bad"><b>${blocked}</b> blocked</span>` : '',
+    waiting.length ? `<span class="stat bad" title="${esc(waiting.map((d) => `${d.id}: ${d.question} (blocks ${(d.blocks ?? []).join(', ')})`).join('\n'))}"><b>${waiting.length}</b> waiting on the user</span>` : '',
     S.flags.length ? `<span class="stat" title="Open FLAG entries in HANDOVERS.md"><b>${S.flags.length}</b> open flag${S.flags.length === 1 ? '' : 's'}</span>` : '',
   ].join('');
 }
@@ -414,11 +445,11 @@ function renderStats() {
 function renderFilterOptions() {
   const epics = S.all.filter((t) => t.type === 'epic');
   const types = uniq(S.all.filter(workable).map((t) => t.type));
-  const who = uniq(S.all.map((t) => t.assignee).filter(Boolean)).sort();
+  const who = uniq(S.all.map((t) => actorOf(t)?.name).filter(Boolean)).sort();
   const opts = (all, list) => `<option value="">${all}</option>` + list.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   $('#f-epic').innerHTML = opts('All epics', [...epics.map((e) => [e.id, `${e.id} · ${e.title ?? ''}`]), ['-', 'No epic']]);
   $('#f-type').innerHTML = opts('All types', types.map((t) => [t, cap(t)]));
-  $('#f-who').innerHTML = opts('Anyone', [...who.map((w) => [w, w]), ['-', 'Unassigned']]);
+  $('#f-who').innerHTML = opts('Any worker', [...who.map((w) => [w, w]), ['-', 'No worker yet']]);
   for (const [k, field, all] of ACTOR_FILTERS) {
     const values = uniq(S.all.map((t) => t.last_actor?.[field]).filter(Boolean)).sort();
     $(`#f-${k}`).innerHTML = opts(all, [...values.map((v) => [v, k === 'role' || k === 'tier' ? cap(v) : v]), ['-', 'Not recorded']]);
@@ -460,9 +491,11 @@ function renderBoard() {
     const inCol = S.all.filter((t) => workable(t) && t.status === s);
     const shown = inCol.filter(matches);
     if (F.sort) shown.sort(bySort);
-    const pts = shown.reduce((n, t) => n + (Number(t.points) || 0), 0);
-    const count = s === 'IN_PROGRESS' ? `${inCol.length}/${wip}` : shown.length;
-    const bad = s === 'IN_PROGRESS' && inCol.length > wip;
+    // A story with tasks is the sum of its tasks: count only leaf tickets, or the points count twice.
+    const pts = shown.filter(isLeaf).reduce((n, t) => n + (Number(t.points) || 0), 0);
+    const held = inCol.filter(isLeaf).length;
+    const count = s === 'IN_PROGRESS' ? `${held}/${wip}` : shown.length;
+    const bad = s === 'IN_PROGRESS' && held > wip;
     return `<section class="col" style="--sc:${COLOR[s] ?? 'var(--danger)'}" aria-label="${esc(LABEL[s] ?? s)}">
       <div class="col-head">${esc(LABEL[s] ?? s)}<span class="count ${bad ? 'bad' : ''}" title="${s === 'IN_PROGRESS' ? 'WIP limit on the whole board' : 'Tickets'}">${count}</span><span class="sum">${pts} pts</span></div>
       <div class="col-body">${shown.map(card).join('') || '<div class="col-empty">No tickets</div>'}</div>
@@ -475,10 +508,16 @@ function card(t) {
   const wait = ['DONE', 'ABANDONED'].includes(t.status) ? [] : waitingOn(t);
   const flags = S.flags.filter((f) => f.target === t.id);
   const kids = childrenOf(t).filter((k) => !k.missing && workable(k) && k.status !== 'ABANDONED');
+  const actor = actorOf(t);
+  const decisions = (S.board?.decisions_pending ?? []).filter((d) => (d.blocks ?? []).includes(t.id));
   const tags = [
     e ? epicPill(e) : '',
     wait.length ? `<span class="tag bad" title="Requires ${esc(wait.join(', '))} to be DONE">waits on ${esc(wait.join(', '))}</span>` : '',
     flags.length ? `<span class="tag warn" title="${esc(flags.map((f) => f.summary).join('\n'))}">${flags.length} flag${flags.length === 1 ? '' : 's'}</span>` : '',
+    decisions.length ? `<span class="tag bad" title="${esc(decisions.map((d) => `${d.id}: ${d.question}`).join('\n'))}">waits on the user</span>` : '',
+    t.design?.stale || t.design?.pending ? `<span class="tag warn" title="${esc(t.design.stale ? `Design source ${t.design.stale.source} changed; regroom` : 'No design link yet')}">design</span>` : '',
+    t.rework_count ? `<span class="tag" title="Sent back by review">${esc(t.rework_count)} rework${t.rework_count === 1 ? '' : 's'}</span>` : '',
+    t.archived ? '<span class="tag" title="Record and note are in the archive">archived</span>' : '',
     isStale(t) ? `<span class="tag warn" title="Claimed over ${STALE_CLAIM_HOURS}h ago; possible orphaned claim (protocol 5.3)">stale claim</span>` : '',
     kids.length ? `<span class="tag" title="Child tickets done">${kids.filter((k) => k.status === 'DONE').length}/${kids.length} subtasks</span>` : '',
   ].join('');
@@ -493,7 +532,8 @@ function card(t) {
       ${noteIds(t).length ? `<span class="note-ico" title="Has handover note">${NOTE_SVG}</span>` : ''}
       ${t.model ? `<span class="model" title="Worker model tier">${esc(t.model)}</span>` : ''}
       <span class="pts" title="Story points">${esc(t.points ?? '–')}</span>
-      ${avatar(t.assignee)}
+      ${actor ? `<span class="who" title="${esc(actor.now ? 'Working on it' : 'Delivered it')}">${esc(actor.name)}</span>` : ''}
+      ${actor ? avatar(actor.name, { past: !actor.now, title: `${actor.now ? 'Working on it' : 'Delivered it'}: ${actor.name}${!actor.now && t.done_by_model ? ` (${t.done_by_model})` : t.worker_model ? ` (${t.worker_model})` : ''}` }) : avatar(null)}
     </div>
   </div>`;
 }
@@ -515,7 +555,7 @@ function renderDrawer() {
   const root = $('#drawer-root');
   const t = S.open && S.byId.get(S.open);
   if (!t) { root.innerHTML = ''; return; }
-  const notes = noteIds(t);
+  const notes = contextNotes(t);
   if (S.tab === 'handover' && !notes.length) S.tab = 'details';
   root.innerHTML = `<div class="scrim" data-close></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-label="${esc(t.id)}">
@@ -524,7 +564,7 @@ function renderDrawer() {
     <h2 class="d-title">${esc(t.title ?? '(untitled)')}</h2>
     <div class="tabs" role="tablist">
       <button class="tab ${S.tab === 'details' ? 'on' : ''}" data-tab="details" role="tab">Details</button>
-      <button class="tab ${S.tab === 'handover' ? 'on' : ''}" data-tab="handover" role="tab" ${notes.length ? '' : 'disabled title="No handover note yet"'}>Handover${notes.length ? ` (${notes.length})` : ''}</button>
+      <button class="tab ${S.tab === 'handover' ? 'on' : ''}" data-tab="handover" role="tab" ${notes.length ? '' : 'disabled title="No handover note yet"'}>Context${notes.length ? ` (${notes.length})` : ''}</button>
     </div>
     <div class="d-body" id="d-body">${S.tab === 'details' ? details(t) : '<p class="muted">Loading…</p>'}</div>
   </aside>`;
@@ -550,7 +590,13 @@ function details(t) {
       <dt>Status</dt><dd>${statusPill(t.status)}${wait.length && !['DONE', 'ABANDONED'].includes(t.status) ? `<span class="tag bad">waits on ${esc(wait.join(', '))}</span>` : ''}</dd>
       <dt>Points</dt><dd><span class="pts">${esc(t.points ?? '–')}</span>${p && p.total ? `<span class="muted">${p.done}/${p.total} pts of children done</span>` : ''}</dd>
       <dt>Assignee</dt><dd>${avatar(t.assignee)}<span>${esc(t.assignee ?? 'Unassigned')}</span></dd>
+      <dt>Delivered by</dt><dd>${t.done_by ? `${avatar(t.done_by, { past: true })}<span>${esc(t.done_by)}${t.done_by_model ? ` (${esc(t.done_by_model)})` : ''}</span>` : '<span class="muted">—</span>'}</dd>
       <dt>Claimed</dt><dd>${whenFull(t.claimed_at)}</dd>
+      <dt>Started</dt><dd>${whenFull(t.started_at)}${t.stamps_backfilled ? '<span class="muted">from the notes, not a claim</span>' : ''}</dd>
+      <dt>Done</dt><dd>${whenFull(t.done_at)}${t.rework_count ? `<span class="tag">${esc(t.rework_count)} rework${t.rework_count === 1 ? '' : 's'}</span>` : ''}</dd>
+      <dt>Order</dt><dd>${t.order ?? '<span class="muted">—</span>'}</dd>
+      <dt>Design</dt><dd>${t.design?.refs?.length ? chips(t.design.refs) : t.design?.na ? `<span class="muted">none: ${esc(t.design.na)}</span>` : '<span class="muted">—</span>'}${t.design?.stale ? `<span class="tag warn">source changed: ${esc(t.design.stale.source)}</span>` : ''}${t.design?.pending ? '<span class="tag warn">no link yet</span>' : ''}</dd>
+      <dt>ADRs</dt><dd>${t.adrs?.length ? chips(t.adrs) : '<span class="muted">—</span>'}</dd>
       <dt>Created</dt><dd>${whenFull(t.created_at)}</dd>
       <dt>Last change</dt><dd>${whenFull(t.updated_at)}</dd>
       <dt>Last actor</dt><dd>${t.last_actor ? `${avatar(t.last_actor.name)}<span>${esc(actorText(t.last_actor))}</span>` : '<span class="muted">—</span>'}</dd>
@@ -585,14 +631,67 @@ function claimsView(t) {
     <thead><tr><th>Worker</th><th>Tier · model</th><th>Claimed</th><th>Released</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
-async function renderNotes(t, ids) {
-  const parts = await Promise.all(ids.map(async (id) => {
-    if (!S.noteCache.has(id)) S.noteCache.set(id, get(`/api/handovers/${encodeURIComponent(id)}`, 'text').catch((e) => `*Could not load: ${e.message}*`));
-    const text = await S.noteCache.get(id);
-    return `<p class="note-src">docs/kanban/handovers/${esc(id)}.md${id === t.id ? '' : ' · linked note'}</p><div class="md">${markdown(text)}</div>`;
+// The notes a worker reads for a ticket (protocol 6.3), each with why it is read:
+// own = the ticket's note; inherited = its epic and story, the notes its "handovers" field lists, and the
+// last PROGRESS entry of each "requires" ticket.
+function contextNotes(t) {
+  const out = [];
+  const add = (id, kind, why, only) => { if (S.notes.has(id) && !out.some((n) => n.id === id && n.only === only)) out.push({ id, kind, why, only }); };
+  const chain = [];
+  const seen = new Set([t.id]);
+  for (let p = S.byId.get(t.parent); p && !seen.has(p.id); p = S.byId.get(p.parent)) { chain.unshift(p); seen.add(p.id); }
+  for (const p of chain) add(p.id, 'inherited', cap(p.type));
+  for (const h of t.handovers ?? []) if (h !== t.id) add(h, 'inherited', 'Listed in handovers');
+  add(t.id, 'own', 'This ticket');
+  for (const r of t.requires ?? []) add(r, 'inherited', 'Requires: last PROGRESS entry', 'PROGRESS');
+  return out;
+}
+
+// A note as { state, entries }: the "## STATE" block, and every other "## " section in file order.
+function parseNote(text) {
+  const lines = String(text).replace(/<!--[\s\S]*?-->/g, '').replace(/\r\n?/g, '\n').split('\n');
+  const out = { pre: [], state: null, entries: [] };
+  let cur = null;
+  for (const line of lines) {
+    const m = line.match(/^##\s+(.*)$/);
+    if (m) {
+      const h = m[1].match(/^([A-Za-z]+)\s*(?:\((DELETED|SUPERSEDED)\))?/);
+      cur = { head: m[1], type: (h?.[1] ?? '').toUpperCase(), mark: h?.[2] ?? null, lines: [] };
+      if (cur.type === 'STATE' && !out.state) out.state = cur; else out.entries.push(cur);
+    } else if (cur) cur.lines.push(line);
+    else out.pre.push(line);
+  }
+  const trim = (e) => ({ ...e, body: e.lines.join('\n').replace(/(\n\s*-{3,}\s*)+\s*$/, '').trim() });
+  return { state: out.state && trim(out.state), entries: out.entries.map(trim) };
+}
+
+function noteView(text, only) {
+  const { state, entries } = parseNote(text);
+  let list = entries;
+  if (only) list = entries.filter((e) => e.type === only && !e.mark).slice(-1);
+  const one = (e) => {
+    const head = entryHead(e.head) ?? `<div class="entry-head e-other"><span class="etype">${inline(e.head)}</span></div>`;
+    // A superseded or deleted entry stays in the note for the record. It is shown folded and struck through.
+    if (e.mark) return `<details class="gone"><summary title="${e.mark === 'SUPERSEDED' ? 'Superseded: kept for the record, do not act on it' : 'Deleted'}">${head}</summary><div class="md">${markdown(e.body)}</div></details>`;
+    return `${head}<div class="md">${markdown(e.body)}</div>`;
+  };
+  const stateHtml = state && !only ? `<div class="state-box" title="STATE: what is true now. The only part of a note that is rewritten.">${entryHead(state.head) ?? ''}<div class="md">${markdown(state.body)}</div></div>` : '';
+  return stateHtml + (list.map(one).join('') || (stateHtml ? '' : '<p class="muted">No entry.</p>'));
+}
+
+async function renderNotes(t, notes) {
+  const shown = notes.filter((n) => S.ctx === 'all' || n.kind === S.ctx);
+  const parts = await Promise.all(shown.map(async (n) => {
+    if (!S.noteCache.has(n.id)) S.noteCache.set(n.id, get(`/api/handovers/${encodeURIComponent(n.id)}`, 'text').catch((e) => `*Could not load: ${e.message}*`));
+    const text = await S.noteCache.get(n.id);
+    const other = S.byId.get(n.id);
+    return `<p class="note-src"><span class="why">${esc(n.why)}</span>${n.id === t.id ? '' : `<a href="#" data-open="${esc(n.id)}">${esc(n.id)}</a>`}<span>${esc(other?.title ?? '')}</span><span class="spacer"></span><span>handovers/${other?.archived ? 'archive/' : ''}${esc(n.id)}.md</span></p><div class="md">${noteView(text, n.only)}</div>`;
   }));
+  const count = (k) => notes.filter((n) => k === 'all' || n.kind === k).length;
+  const bar = `<div class="ctx-bar"><label for="ctx">Show</label><select id="ctx" aria-label="Context to show">${Object.entries(CTX).map(([v, l]) => `<option value="${v}" ${S.ctx === v ? 'selected' : ''}>${esc(l)} (${count(v)})</option>`).join('')}</select>
+    <span>${S.ctx === 'own' ? 'The note of this ticket.' : S.ctx === 'inherited' ? 'Epic and story notes, notes listed in handovers, and the last PROGRESS entry of each required ticket.' : 'Everything a worker reads for this ticket, in reading order.'}</span></div>`;
   const body = $('#d-body');
-  if (body && S.open === t.id && S.tab === 'handover') body.innerHTML = parts.join('');
+  if (body && S.open === t.id && S.tab === 'handover') body.innerHTML = bar + (parts.join('') || '<p class="muted">Nothing here.</p>');
 }
 
 // ---------- Markdown (subset used by handover notes; all input is escaped, no raw HTML) ----------
@@ -614,12 +713,13 @@ function inline(src) {
 }
 
 function entryHead(text) {
-  const m = text.match(/^(GROOMING|PROGRESS|REVIEW|FLAG|AMEND)\b(\s*\(DELETED\))?\s*·?\s*(.*)$/);
+  const m = text.match(/^(GROOMING|PROGRESS|REVIEW|FLAG|AMEND|STATE|DECISION)\b\s*(?:\((DELETED|SUPERSEDED)\))?\s*·?\s*(.*)$/);
   if (!m) return null;
   const parts = m[3].split('·').map((x) => x.trim()).filter(Boolean);
-  const status = m[1] !== 'FLAG' && /^(PAUSED|BLOCKED|REVIEW|ABANDONED|DONE|REWORK|EDITED|DELETED|BACKLOG|TODO)$/.test(parts.at(-1) ?? '') ? parts.pop() : null;
+  let status = m[1] !== 'FLAG' && /^(PAUSED|BLOCKED|REVIEW|ABANDONED|DONE|REWORK|EDITED|DELETED|BACKLOG|TODO|RESOLVED)$/.test(parts.at(-1) ?? '') ? parts.pop() : null;
+  if (m[2] === 'SUPERSEDED') status = 'SUPERSEDED';
   const [date, ...rest] = parts;
-  return `<div class="entry-head e-${m[1].toLowerCase()}"><span class="etype">${m[1]}${m[2] ? ' (deleted)' : ''}</span>${date ? `<span class="edate" title="${esc(date)}">${esc(fmtDate(date))}</span>` : ''}<span>${inline(rest.join(' · '))}</span><span class="spacer"></span>${status ? statusPill(status) : ''}</div>`;
+  return `<div class="entry-head e-${m[1].toLowerCase()}"><span class="etype">${m[1]}${m[2] === 'DELETED' ? ' (deleted)' : ''}</span>${date ? `<span class="edate" title="${esc(date)}">${esc(fmtDate(date))}</span>` : ''}<span>${inline(rest.join(' · '))}</span><span class="spacer"></span>${status ? statusPill(status) : ''}</div>`;
 }
 
 function markdown(src) {
@@ -688,7 +788,8 @@ function readHash() {
   if (!SORTS[F.sort]) F.sort = '';
   F.dir = p.get('dir') === 'asc' ? 'asc' : 'desc';
   F.notes = p.has('notes'); F.abandoned = p.has('abandoned');
-  S.open = p.get('ticket'); S.tab = p.get('tab') === 'handover' ? 'handover' : 'details';
+  S.open = p.get('ticket'); S.tab = ['handover', 'context'].includes(p.get('tab')) ? 'handover' : 'details';
+  S.ctx = CTX[p.get('ctx')] ? p.get('ctx') : 'all';
 }
 function hashFor(open = S.open, tab = S.tab) {
   const p = new URLSearchParams();
@@ -696,7 +797,7 @@ function hashFor(open = S.open, tab = S.tab) {
   if (F.sort && F.dir === 'asc') p.set('dir', 'asc');
   if (F.notes) p.set('notes', '');
   if (F.abandoned) p.set('abandoned', '');
-  if (open) { p.set('ticket', open); if (tab === 'handover') p.set('tab', 'handover'); }
+  if (open) { p.set('ticket', open); if (tab === 'handover') { p.set('tab', 'context'); if (S.ctx !== 'all') p.set('ctx', S.ctx); } }
   return p.toString().replace(/=(&|$)/g, '$1');
 }
 const saveFilters = () => { history.replaceState(null, '', `#${hashFor()}`); renderBoard(); };
@@ -727,6 +828,12 @@ document.addEventListener('click', (e) => {
   else if (el.dataset.copy) {
     navigator.clipboard?.writeText(el.dataset.copy).then(() => { el.textContent = 'Copied'; setTimeout(() => (el.textContent = 'Copy'), 1200); }, () => {});
   }
+});
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'ctx') return;
+  S.ctx = e.target.value;
+  history.replaceState(null, '', `#${hashFor()}`);
+  renderDrawer();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.open) closeTicket();
